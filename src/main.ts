@@ -1,3 +1,5 @@
+import { waterfall } from "./waterfall";
+import { combobox } from "./combobox";
 import { renderMarkdown, streamingMarkdown } from "./markdown";
 import "./style.css";
 import qrcode from "qrcode-generator";
@@ -40,6 +42,7 @@ const K = {
   maxTokens: "rc:max-tokens",
   prewarm: "rc:prewarm",
   remember: "rc:remember",
+  timingNumbers: "rc:timing-numbers",
 };
 
 function load<T>(k: string, d: T): T {
@@ -64,6 +67,7 @@ let credential: string | undefined = load<string | undefined>(K.credential, unde
 // On by default: a key only in memory is lost with the tab, and its balance
 // with it. The user can untick it (and the choice is kept).
 let remember = load(K.remember, true);
+let showTimingNumbers = load(K.timingNumbers, false);
 // `?prewarm=0` (tests) or the user's choice in the Costs panel.
 let prewarmOn = new URLSearchParams(location.search).get("prewarm") === "0" ? false : load(K.prewarm, true);
 let mintFees: MintFee[] | undefined;
@@ -192,29 +196,7 @@ function layout(): void {
           h(
             "div",
             { class: "toolbar" },
-            h(
-              "div",
-              { class: "model-pick" },
-              h("input", {
-                id: "model-search",
-                type: "search",
-                placeholder: "Search models…",
-                "aria-label": "Search models",
-                autocomplete: "off",
-                oninput: () => renderModelOptions(),
-                onkeydown: (e: KeyboardEvent) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    const sel = $<HTMLSelectElement>("model");
-                    if (sel.options[0]) {
-                      sel.value = sel.options[0].value;
-                      onModelChange();
-                    }
-                  }
-                },
-              }),
-              h("select", { id: "model", "aria-label": "Model", onchange: onModelChange }),
-            ),
+            modelPicker.el,
             h("label", { class: "inline" }, "max tokens", h("input", { id: "max-tokens", type: "number", min: 1, step: 1, style: "width:90px", onchange: onModelChange })),
             h("span", { class: "est", id: "estimate" }),
           ),
@@ -388,33 +370,18 @@ function costsCard(): HTMLElement {
   const abandon = offerAbandonFeeMsat(offer);
   const sessionFee = offerSessionFeeMsat(offer);
   const pct = typeof offer.rate_surcharge_pct === "number" ? offer.rate_surcharge_pct : 0;
-  const p = currentModelOrNull();
   card.append(
     h(
       "p",
       {},
-      h("strong", {}, "Per message: "),
-      p ? `${p.name ?? p.id} costs ${formatSats(p.rates.in * 1000)} per million input tokens and ${formatSats(p.rates.out * 1000)} per million output tokens. ` : "",
-      "What you pay is the provider-reported usage at these signed rates",
+      h("strong", {}, "Prices: "),
+      "the line under the model shows the selected model's signed rates, a typical message's cost and the balance it needs. ",
+      "You pay the provider-reported usage at those rates",
       sessionFee ? `, plus a session fee of ${formatSats(sessionFee)}` : "",
       pct ? ` (rates include a ${pct}% confidential surcharge)` : "",
-      ". Each answer shows its exact cost from the signed receipt.",
-    ),
-    h(
-      "p",
-      {},
-      h("strong", {}, "Balance needed: "),
-      "while a request runs, the node reserves its worst case (a prompt filling the model's whole context plus the max tokens",
+      ". While a request runs, the node holds its worst case (a prompt filling the model's whole context plus the max tokens",
       abandon || sessionFee ? `, plus the ${formatSats(Math.max(abandon, sessionFee))} fee` : "",
-      ") and releases the unused part when it settles. Your key needs at least this much available:",
-    ),
-    h(
-      "dl",
-      { class: "kv" },
-      ...pricing.flatMap((m) => [
-        h("dt", {}, m.name ?? m.id),
-        h("dd", {}, m.reservationMsat !== undefined ? formatSats(m.reservationMsat) : "unknown (no context length)"),
-      ]),
+      ") and releases the rest when it settles. Each answer shows its exact cost from the signed receipt.",
     ),
     h(
       "p",
@@ -466,8 +433,7 @@ function mintFeeLines(): HTMLElement {
 }
 
 function currentModelOrNull(): ModelPricing | undefined {
-  const sel = document.getElementById("model") as HTMLSelectElement | null;
-  return sel ? pricing.find((p) => p.id === sel.value) : undefined;
+  return pricing.find((p) => p.id === modelPicker.value);
 }
 
 function balanceSub(avail?: number): string {
@@ -605,8 +571,27 @@ function verificationPanel(): HTMLElement {
     h(
       "div",
       { class: "card timing" },
-      h("strong", {}, r.prewarmed ? "Timings (warm: pre-armed session)" : "Timings (cold)"),
-      kv([
+      h(
+        "div",
+        { class: "timing-head" },
+        h("strong", {}, r.prewarmed ? "Timeline (warm: pre-armed session)" : "Timeline (cold)"),
+        h(
+          "label",
+          { class: "inline" },
+          h("input", {
+            type: "checkbox",
+            checked: showTimingNumbers,
+            onchange: (e: Event) => {
+              showTimingNumbers = (e.target as HTMLInputElement).checked;
+              save(K.timingNumbers, showTimingNumbers);
+              renderSide();
+            },
+          }),
+          "numbers",
+        ),
+      ),
+      waterfall(t.spans ?? [], { ttftMs: r.ttftMs, numbers: showTimingNumbers }),
+      !showTimingNumbers ? null : kv([
         ["first token", ms(r.ttftMs)],
         ["total", ms(r.totalMs)],
         ["arm (setup + 2PC preprocessing)", r.prewarmed ? `${ms(t.armMs)} (before the request)` : ms(t.armMs)],
@@ -617,7 +602,7 @@ function verificationPanel(): HTMLElement {
         ["provider first byte", ms(t.upstreamTtftMs)],
         ["2PC traffic", t.twoPcBytes ? `${(t.twoPcBytes.sent / 1e6).toFixed(2)} MB up · ${(t.twoPcBytes.recv / 1e6).toFixed(1)} MB down` : "—"],
       ]),
-      t.twoPcSteps?.length
+      showTimingNumbers && t.twoPcSteps?.length
         ? h("details", {}, h("summary", {}, "2PC steps (wasm)"), kv(t.twoPcSteps.map((s) => [s.step, `${Math.round(s.ms)} ms`] as [string, Child])))
         : null,
     ),
@@ -641,6 +626,7 @@ function renderStatus(): void {
 }
 
 const DEFAULT_MODEL = "deepseek-v4-flash-0731";
+const modelPicker = combobox({ id: "model", ariaLabel: "Model (type to filter)", onPick: () => onModelChange() });
 
 function renderModels(): void {
   const saved = load<string>(K.model, "");
@@ -649,31 +635,21 @@ function renderModels(): void {
   renderEstimate();
 }
 
-/** The model list, filtered by the search box (every word must match the name or id). */
-function renderModelOptions(want?: string): void {
-  const sel = $<HTMLSelectElement>("model");
-  const current = want ?? sel.value;
-  const terms = ($<HTMLInputElement>("model-search")?.value ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+/** The model picker's items, by name, with their rates. */
+function renderModelOptions(want: string): void {
   const sorted = [...pricing].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id));
-  const shown = sorted.filter((p) => {
-    const hay = `${p.name ?? ""} ${p.id}`.toLowerCase();
-    return p.id === current || terms.every((t) => hay.includes(t));
-  });
-  // Keep the selected model listed (first, if it does not match) so the select never changes on its own.
-  const cur = shown.find((p) => p.id === current);
-  const rest = shown.filter((p) => p !== cur);
-  const matches = cur && terms.length && !terms.every((t) => `${cur.name ?? ""} ${cur.id}`.toLowerCase().includes(t)) ? [...rest, cur] : shown;
-  sel.replaceChildren(
-    ...matches.map((p) =>
-      h("option", { value: p.id, selected: p.id === current }, `${p.name ?? p.id} — in ${formatSats(p.rates.in * 1000)}/M · out ${formatSats(p.rates.out * 1000)}/M`),
-    ),
+  modelPicker.setItems(
+    sorted.map((p) => ({
+      id: p.id,
+      label: p.name ?? p.id,
+      detail: `in ${formatSats(p.rates.in * 1000)}/M · out ${formatSats(p.rates.out * 1000)}/M`,
+    })),
+    want,
   );
-  if (current) sel.value = current;
 }
 
 function currentModel(): ModelPricing | undefined {
-  const id = $<HTMLSelectElement>("model").value;
-  return pricing.find((p) => p.id === id);
+  return currentModelOrNull();
 }
 
 function maxTokens(): number {
@@ -967,7 +943,7 @@ function friendlyError(err: unknown): string {
 /** Non-secret outcomes for the browser tests (no credential, no prompt). */
 function testHook(): { results: unknown[]; errors: string[]; renderMarkdown?: (t: string) => string } {
   const w = window as unknown as { __rc?: { results: unknown[]; errors: string[]; renderMarkdown?: (t: string) => string } };
-  w.__rc ??= { results: [], errors: [], renderMarkdown };
+  w.__rc ??= { results: [], errors: [], renderMarkdown, waterfall } as never;
   return w.__rc;
 }
 
