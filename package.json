@@ -17,6 +17,7 @@
     "qrcode-generator": "1.4.4"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "playwright": "1.63.0",
     "typescript": "5.9.3",
     "vite": "7.1.12"
