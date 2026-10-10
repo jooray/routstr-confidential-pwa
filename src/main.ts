@@ -867,7 +867,7 @@ async function onSend(e: Event): Promise<void> {
   const body = h("div", { class: "md" }, "");
   const view = streamingMarkdown(body);
   // Reasoning models stream their thinking separately (reasoning_content):
-  // shown live, collapsed once the answer starts.
+  // collapsed; click to expand (it keeps streaming inside).
   const thinkingText = h("div", { class: "thinking-text" }, "");
   const thinking = h("details", { class: "thinking", hidden: true }, h("summary", {}, "thinking…"), thinkingText);
   let reasoning = "";
@@ -892,21 +892,15 @@ async function onSend(e: Event): Promise<void> {
       finish = choice?.finish_reason ?? finish;
       const r = delta?.reasoning_content ?? delta?.reasoning;
       if (r) {
-        if (!reasoning) {
-          thinking.hidden = false;
-          (thinking as HTMLDetailsElement).open = !answer.content;
-        }
+        if (!reasoning) thinking.hidden = false;
         reasoning += r;
         thinkingText.textContent = reasoning;
+        if (!answer.content) thinking.querySelector("summary")!.textContent = `thinking… (${reasoning.length.toLocaleString()} characters)`;
         thinkingText.scrollTop = thinkingText.scrollHeight;
         answer.el.scrollIntoView({ block: "end" });
       }
       const d = delta?.content;
       if (d) {
-        if (!answer.content && reasoning) {
-          (thinking as HTMLDetailsElement).open = false;
-          thinking.querySelector("summary")!.textContent = "thought for a while (show)";
-        }
         answer.content += d;
         view.set(answer.content);
         answer.el.scrollIntoView({ block: "end" });
