@@ -17,6 +17,14 @@ function fmt(ms: number): string {
   return a >= 10_000 ? `${(ms / 1000).toFixed(1)} s` : a >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${Math.round(ms)} ms`;
 }
 
+/** Axis label: compact, signed ("−10 s", "0", "+2.5 s", "+500 ms"). */
+function tickLabel(ms: number): string {
+  if (ms === 0) return "0";
+  const sign = ms < 0 ? "−" : "+";
+  const a = Math.abs(ms);
+  return a >= 1000 ? `${sign}${+(a / 1000).toFixed(1)} s` : `${sign}${Math.round(a)} ms`;
+}
+
 function div(cls: string, style?: string, text?: string): HTMLDivElement {
   const d = document.createElement("div");
   d.className = cls;
@@ -25,16 +33,16 @@ function div(cls: string, style?: string, text?: string): HTMLDivElement {
   return d;
 }
 
-/** Nice tick step for a range in ms. */
-function tickStep(range: number): number {
-  const raw = range / 5;
+/** Nice tick step for a range in ms (about `n` ticks). */
+function tickStep(range: number, n: number): number {
+  const raw = range / n;
   const pow = 10 ** Math.floor(Math.log10(raw));
   for (const m of [1, 2, 5, 10]) if (m * pow >= raw) return m * pow;
   return 10 * pow;
 }
 
-export function waterfall(spans: TimingSpan[], opts: { ttftMs?: number; numbers: boolean }): HTMLElement {
-  const root = div(`wf${opts.numbers ? " numbers" : ""}`);
+export function waterfall(spans: TimingSpan[], opts: { ttftMs?: number; numbers: boolean; large?: boolean }): HTMLElement {
+  const root = div(`wf${opts.numbers ? " numbers" : ""}${opts.large ? " large" : ""}`);
   if (!spans.length) {
     root.append(div("muted", undefined, "No timing data."));
     return root;
@@ -47,11 +55,15 @@ export function waterfall(spans: TimingSpan[], opts: { ttftMs?: number; numbers:
   // axis
   const axis = div("wf-row wf-axis");
   const axisTrack = div("wf-track");
-  const step = tickStep(range);
-  for (let t = Math.ceil(lo / step) * step; t <= hi; t += step) {
-    const tick = div("wf-tick", `left:${pct(t)}`, t === 0 ? "0" : fmt(t));
-    axisTrack.append(tick);
-  }
+  const step = tickStep(range, opts.large ? 12 : 7);
+  const ticks: number[] = [];
+  for (let t = Math.ceil(lo / step) * step; t <= hi + 1e-9; t += step) ticks.push(Math.round(t));
+  ticks.forEach((t, i) => {
+    // skip labels that would collide with the edges; the grid line stays
+    const edge = (t - lo) / range;
+    const show = (opts.large || i % 2 === 0 || t === 0) && edge > 0.04 && edge < 0.96;
+    axisTrack.append(div("wf-tick", `left:${pct(t)}`, show ? tickLabel(t) : ""));
+  });
   axis.append(div("wf-label"), axisTrack);
   root.append(axis);
 
@@ -69,20 +81,25 @@ export function waterfall(spans: TimingSpan[], opts: { ttftMs?: number; numbers:
     bar.title = `${s.name}: ${fmt(dur)} (${fmt(s.startMs)} → ${fmt(s.endMs)} from sending)`;
     track.append(bar);
     if (opts.numbers) {
-      const right = (s.endMs - lo) / range > 0.75;
-      track.append(
-        div(
-          "wf-num",
-          right ? `right:calc(100% - ${pct(s.startMs)} + 4px)` : `left:calc(${pct(s.endMs)} + 4px)`,
-          fmt(dur),
-        ),
-      );
+      const w = dur / range;
+      if (w > 0.18) bar.append(div("wf-num-in", undefined, fmt(dur)));
+      else {
+        const right = (s.endMs - lo) / range > 0.75;
+        track.append(
+          div(
+            "wf-num",
+            right ? `right:calc(100% - ${pct(s.startMs)} + 4px)` : `left:calc(${pct(s.endMs)} + 4px)`,
+            fmt(dur),
+          ),
+        );
+      }
     }
     row.append(label, track);
     body.append(row);
   }
   // markers span the whole body
   const markers = div("wf-markers");
+  for (const t of ticks) if (t !== 0) markers.append(div("wf-grid", `left:${pct(t)}`));
   const sent = div("wf-marker sent", `left:${pct(0)}`);
   sent.title = "request sent";
   markers.append(sent);

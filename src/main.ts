@@ -199,6 +199,7 @@ function layout(): void {
             modelPicker.el,
             h("label", { class: "inline" }, "max tokens", h("input", { id: "max-tokens", type: "number", min: 1, step: 1, style: "width:90px", onchange: onModelChange })),
             h("span", { class: "est", id: "estimate" }),
+            h("button", { type: "button", id: "clear-chat", class: "secondary", title: "Clear the conversation", onclick: clearChat }, "New chat"),
           ),
           h("div", { class: "messages", id: "messages" }, emptyState()),
           h(
@@ -578,6 +579,7 @@ function verificationPanel(): HTMLElement {
         "div",
         { class: "timing-head" },
         h("strong", {}, r.prewarmed ? "Timeline (warm: pre-armed session)" : "Timeline (cold)"),
+        h("button", { type: "button", class: "icon-btn", title: "Show larger", "aria-label": "Show the timeline larger", onclick: () => openTimelineDialog(r) }, "⤢"),
         h(
           "label",
           { class: "inline" },
@@ -610,6 +612,40 @@ function verificationPanel(): HTMLElement {
         : null,
     ),
   );
+}
+
+/** The timeline, large, in a modal dialog with the step legend explained. */
+function openTimelineDialog(r: ConfidentialSessionResult): void {
+  document.getElementById("wf-dialog")?.remove();
+  const dlg = document.createElement("dialog");
+  dlg.id = "wf-dialog";
+  dlg.className = "wf-dialog";
+  const t = r.timings;
+  const ms = (v?: number) => (v === undefined ? "—" : v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${Math.round(v)} ms`);
+  dlg.append(
+    h(
+      "div",
+      { class: "wf-dialog-head" },
+      h("strong", {}, `${r.prewarmed ? "Warm (pre-armed)" : "Cold"} request · first token ${ms(r.ttftMs)} · total ${ms(r.totalMs)}`),
+      h("button", { type: "button", class: "icon-btn", "aria-label": "Close", onclick: () => dlg.close() }, "✕"),
+    ),
+    waterfall(t.spans ?? [], { ttftMs: r.ttftMs, numbers: true, large: true }),
+    h(
+      "p",
+      { class: "muted wf-explain" },
+      "Time runs left to right; the blue line is when you sent the message. ",
+      r.prewarmed
+        ? "Everything left of it happened beforehand: the session was set up and the two-party (2PC) preparation, the large part, ran while you were typing. "
+        : "This request had no prepared session, so the 2PC preparation ran after you sent it. ",
+      "After sending: the TLS handshake with the provider, whose keys the browser and the node compute together (2PC phases A and B); π_NK proves the node's credential record matches the published template; the node writes it; the provider starts answering (the red dashed line is the first token). π_C2S proves the pinned model and token cap before the provider sees them, and π_C3S discloses only the usage for the receipt.",
+    ),
+  );
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg) dlg.close();
+  });
+  dlg.addEventListener("close", () => dlg.remove());
+  document.body.append(dlg);
+  dlg.showModal();
 }
 
 // ─── header, models, estimate ───────────────────────────────────────────────
@@ -829,6 +865,15 @@ async function onRefund(): Promise<void> {
 }
 
 // ─── chat ───────────────────────────────────────────────────────────────────
+
+function clearChat(): void {
+  if (busy) return toast("Wait for the current answer to finish");
+  turns.length = 0;
+  selected = undefined;
+  $("messages").replaceChildren(emptyState());
+  renderSide();
+  renderEstimate();
+}
 
 function addTurn(role: Turn["role"], content: string): Turn {
   document.getElementById("empty")?.remove();
