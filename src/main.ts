@@ -228,7 +228,10 @@ function layout(): void {
       footer(),
     ),
   );
-  $<HTMLInputElement>("max-tokens").value = String(load(K.maxTokens, 1024));
+  // Reasoning models think before answering; 1024 is often used up by the thinking alone.
+  // 1024 was the old default: move it up too.
+  const savedMax = load(K.maxTokens, 4096);
+  $<HTMLInputElement>("max-tokens").value = String(savedMax === 1024 ? 4096 : savedMax);
 }
 
 /** What this page runs, so users can check it against the sources. */
@@ -655,7 +658,7 @@ function currentModel(): ModelPricing | undefined {
 function maxTokens(): number {
   const v = Number($<HTMLInputElement>("max-tokens").value);
   const cap = offer?.max_tokens_cap ?? 4096;
-  return Number.isFinite(v) && v > 0 ? Math.min(Math.trunc(v), cap) : Math.min(1024, cap);
+  return Number.isFinite(v) && v > 0 ? Math.min(Math.trunc(v), cap) : cap;
 }
 
 function renderEstimate(): void {
@@ -858,12 +861,19 @@ async function onSend(e: Event): Promise<void> {
   if (!credential) return toast("Fund the wallet first (Lightning or Cashu)");
   ta.value = "";
   addTurn("user", text);
-  const history = turns.filter((t) => !t.error).map((t) => ({ role: t.role, content: t.content }));
+  // An empty answer (cut off while reasoning) is not sent back as history.
+  const history = turns.filter((t) => !t.error && t.content).map((t) => ({ role: t.role, content: t.content }));
   const answer = addTurn("assistant", "");
   const body = h("div", { class: "md" }, "");
   const view = streamingMarkdown(body);
+  // Reasoning models stream their thinking separately (reasoning_content):
+  // shown live, collapsed once the answer starts.
+  const thinkingText = h("div", { class: "thinking-text" }, "");
+  const thinking = h("details", { class: "thinking", hidden: true }, h("summary", {}, "thinking…"), thinkingText);
+  let reasoning = "";
+  let finish: string | null | undefined;
   const meta = h("div", { class: "meta" }, "starting confidential session…");
-  answer.el.replaceChildren(body, meta);
+  answer.el.replaceChildren(thinking, body, meta);
   answer.meta = meta;
   busy = true;
   $<HTMLButtonElement>("send").disabled = true;
@@ -877,14 +887,44 @@ async function onSend(e: Event): Promise<void> {
     });
     meta.textContent = "streaming (records verified as they decrypt)…";
     for await (const chunk of stream) {
-      const d = chunk.choices?.[0]?.delta?.content;
+      const choice = chunk.choices?.[0];
+      const delta = choice?.delta as { content?: string; reasoning_content?: string; reasoning?: string } | undefined;
+      finish = choice?.finish_reason ?? finish;
+      const r = delta?.reasoning_content ?? delta?.reasoning;
+      if (r) {
+        if (!reasoning) {
+          thinking.hidden = false;
+          (thinking as HTMLDetailsElement).open = !answer.content;
+        }
+        reasoning += r;
+        thinkingText.textContent = reasoning;
+        thinkingText.scrollTop = thinkingText.scrollHeight;
+        answer.el.scrollIntoView({ block: "end" });
+      }
+      const d = delta?.content;
       if (d) {
+        if (!answer.content && reasoning) {
+          (thinking as HTMLDetailsElement).open = false;
+          thinking.querySelector("summary")!.textContent = "thought for a while (show)";
+        }
         answer.content += d;
         view.set(answer.content);
         answer.el.scrollIntoView({ block: "end" });
       }
     }
     view.flush();
+    if (reasoning) thinking.querySelector("summary")!.textContent = `reasoning (${reasoning.length.toLocaleString()} characters)`;
+    if (finish === "length") {
+      body.after(
+        h(
+          "div",
+          { class: "notice" },
+          answer.content
+            ? `The answer was cut off at the max tokens limit (${maxTokens()}). Raise it to get longer answers.`
+            : `No answer: the model spent all ${maxTokens()} max tokens on reasoning before it started answering. Raise max tokens (up to ${offer?.max_tokens_cap ?? 4096}) and ask again.`,
+        ),
+      );
+    }
     meta.textContent = "settling: proofs and receipt…";
     const r = await stream.verification;
     answer.result = r;

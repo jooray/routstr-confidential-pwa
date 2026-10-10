@@ -183,3 +183,9 @@ label.inline input { width: auto; }
 .wf-swatch { width: 10px; height: 10px; border-radius: 2px; }
 .wf-swatch-line { width: 0; height: 12px; border-left: 2px solid; }
 .timing .kv { margin-top: 10px; }
+
+/* reasoning models */
+.thinking { margin-bottom: 8px; font-size: 13px; color: var(--muted); }
+.thinking summary { cursor: pointer; }
+.thinking-text { white-space: pre-wrap; max-height: 220px; overflow-y: auto; margin-top: 4px; padding: 6px 8px; border-left: 3px solid var(--line); }
+.notice { margin-top: 8px; padding: 6px 10px; border-radius: 6px; background: var(--code); font-size: 13px; }
