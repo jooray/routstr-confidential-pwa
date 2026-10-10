@@ -1,3 +1,4 @@
+import { renderMarkdown, streamingMarkdown } from "./markdown";
 import "./style.css";
 import qrcode from "qrcode-generator";
 import {
@@ -811,7 +812,12 @@ async function onRefund(): Promise<void> {
 
 function addTurn(role: Turn["role"], content: string): Turn {
   document.getElementById("empty")?.remove();
-  const el = h("div", { class: `msg ${role}` }, content);
+  const el = h("div", { class: `msg ${role}` }, role === "assistant" ? "" : content);
+  if (role === "assistant" && content) {
+    const body = h("div", { class: "md" }, "");
+    body.innerHTML = renderMarkdown(content);
+    el.append(body);
+  }
   const t: Turn = { role, content, el };
   $("messages").append(el);
   turns.push(t);
@@ -837,7 +843,8 @@ async function onSend(e: Event): Promise<void> {
   addTurn("user", text);
   const history = turns.filter((t) => !t.error).map((t) => ({ role: t.role, content: t.content }));
   const answer = addTurn("assistant", "");
-  const body = h("span", {}, "");
+  const body = h("div", { class: "md" }, "");
+  const view = streamingMarkdown(body);
   const meta = h("div", { class: "meta" }, "starting confidential session…");
   answer.el.replaceChildren(body, meta);
   answer.meta = meta;
@@ -856,10 +863,11 @@ async function onSend(e: Event): Promise<void> {
       const d = chunk.choices?.[0]?.delta?.content;
       if (d) {
         answer.content += d;
-        body.textContent = answer.content;
+        view.set(answer.content);
         answer.el.scrollIntoView({ block: "end" });
       }
     }
+    view.flush();
     meta.textContent = "settling: proofs and receipt…";
     const r = await stream.verification;
     answer.result = r;
@@ -916,9 +924,9 @@ function friendlyError(err: unknown): string {
 }
 
 /** Non-secret outcomes for the browser tests (no credential, no prompt). */
-function testHook(): { results: unknown[]; errors: string[] } {
-  const w = window as unknown as { __rc?: { results: unknown[]; errors: string[] } };
-  w.__rc ??= { results: [], errors: [] };
+function testHook(): { results: unknown[]; errors: string[]; renderMarkdown?: (t: string) => string } {
+  const w = window as unknown as { __rc?: { results: unknown[]; errors: string[]; renderMarkdown?: (t: string) => string } };
+  w.__rc ??= { results: [], errors: [], renderMarkdown };
   return w.__rc;
 }
 
@@ -963,6 +971,7 @@ window.addEventListener("beforeunload", (e) => {
   }
 });
 
+testHook();
 layout();
 renderSide();
 setupPwa({ isBusy: () => busy, toast });
