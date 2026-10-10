@@ -13,7 +13,7 @@
     "test:e2e": "node scripts/e2e-prod.mjs smoke"
   },
   "dependencies": {
-    "@routstr/confidential-web": "github:jooray/routstr-confidential-web#d7b88f6619dee7d0033db7a55865a348c5911dcd",
+    "@routstr/confidential-web": "github:jooray/routstr-confidential-web#f0ff1d0c16c616b7491a5754fe4936130b27eee1",
     "qrcode-generator": "1.4.4"
   },
   "devDependencies": {
