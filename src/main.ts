@@ -38,6 +38,7 @@ const K = {
   model: "rc:model",
   maxTokens: "rc:max-tokens",
   prewarm: "rc:prewarm",
+  remember: "rc:remember",
 };
 
 function load<T>(k: string, d: T): T {
@@ -59,7 +60,9 @@ function save(k: string, v: unknown): void {
 
 const settings = load(K.settings, { ...DEFAULTS });
 let credential: string | undefined = load<string | undefined>(K.credential, undefined);
-let remember = credential !== undefined;
+// On by default: a key only in memory is lost with the tab, and its balance
+// with it. The user can untick it (and the choice is kept).
+let remember = load(K.remember, true);
 // `?prewarm=0` (tests) or the user's choice in the Costs panel.
 let prewarmOn = new URLSearchParams(location.search).get("prewarm") === "0" ? false : load(K.prewarm, true);
 let mintFees: MintFee[] | undefined;
@@ -293,6 +296,7 @@ function walletCard(): HTMLElement {
             checked: remember,
             onchange: (e: Event) => {
               remember = (e.target as HTMLInputElement).checked;
+              save(K.remember, remember);
               save(K.credential, remember ? credential : undefined);
             },
           }),
@@ -742,7 +746,7 @@ async function onLightning(): Promise<void> {
           box.replaceChildren(h("p", { class: "check" }, `Paid ${st.amount_sats} sat`));
           if (st.api_key && st.api_key !== credential) {
             setCredential(st.api_key);
-            toast("Funded. Copy your key or tick “Remember” so the balance is not lost.", 8000);
+            toast("Funded. The key is remembered on this device; copy it too, so the balance is not lost if site data is cleared.", 8000);
           } else void refreshBalance();
         } else if (st.status === "expired") {
           clearInterval(invoicePoll);
@@ -768,7 +772,7 @@ async function onCashu(): Promise<void> {
     } else {
       const r = await api.createKeyFromCashu(token);
       setCredential(r.api_key);
-      toast("Key created. Copy it or tick “Remember” so the balance is not lost.", 8000);
+      toast("Key created and remembered on this device; copy it too, so the balance is not lost if site data is cleared.", 8000);
     }
     $<HTMLTextAreaElement>("cashu").value = "";
   } catch (e) {
