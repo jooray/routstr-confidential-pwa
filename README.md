@@ -3,7 +3,9 @@
 A chat app (static PWA) for **routstr confidential mode**. The routstr node
 relays your conversation with the LLM provider but cannot read it, and your
 browser checks every step itself. Live at
-**https://jooray.github.io/routstr-confidential-pwa/**.
+**https://jooray.github.io/routstr-confidential-pwa/**. Introduction:
+[Confidential inference on Routstr without trusted hardware](https://juraj.bednar.io/en/blog-en/2026/10/10/confidential-inference-on-routstr-without-trusted-hardware/)
+(blog post).
 
 It is built on the library
 [routstr-confidential-web](https://github.com/jooray/routstr-confidential-web).
