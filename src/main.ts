@@ -230,7 +230,7 @@ function layout(): void {
   );
   // Reasoning models think before answering; 1024 is often used up by the thinking alone.
   // 1024 was the old default: move it up too.
-  const savedMax = load(K.maxTokens, 4096);
+  const savedMax = load<number>(K.maxTokens, 4096);
   $<HTMLInputElement>("max-tokens").value = String(savedMax === 1024 ? 4096 : savedMax);
 }
 
