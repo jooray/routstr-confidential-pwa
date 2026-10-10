@@ -226,3 +226,9 @@ label.inline input { width: auto; }
 @media (max-width: 600px) { .wf.large .wf-row, .wf.large .wf-marker-layer { grid-template-columns: minmax(110px, 36%) 1fr; } .wf-dialog { padding: 12px; } }
 
 #reasoning { width: auto; }
+
+/* "details": the selected answer, and a short highlight of its verification */
+.msg.assistant.selected { box-shadow: 0 0 0 2px var(--accent); }
+@keyframes flash { from { box-shadow: 0 0 0 3px var(--accent); } to { box-shadow: 0 0 0 0 transparent; } }
+.flash > .card:first-child, .flash.card { animation: flash 1.4s ease-out; border-radius: 10px; }
+#verification { scroll-margin-top: 8px; }

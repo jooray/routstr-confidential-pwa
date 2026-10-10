@@ -326,7 +326,7 @@ function renderSide(): void {
     costsCard(),
     h("h2", {}, "Wallet"),
     walletCard(),
-    h("h2", {}, "Verification"),
+    h("h2", { id: "verification" }, "Verification"),
     verificationPanel(),
     h("h2", {}, "Node"),
     nodeCard(),
@@ -948,7 +948,21 @@ function addTurn(role: Turn["role"], content: string): Turn {
 
 function selectTurn(t: Turn): void {
   selected = t;
+  for (const x of turns) x.el.classList.remove("selected");
   renderSide();
+}
+
+/** "details": select this answer and bring its verification into view. */
+function showDetails(t: Turn): void {
+  selectTurn(t);
+  if (turns.filter((x) => x.role === "assistant").length > 1) t.el.classList.add("selected");
+  const v = document.getElementById("verification");
+  if (!v) return;
+  v.scrollIntoView({ behavior: "smooth", block: "start" });
+  const panel = v.nextElementSibling;
+  panel?.classList.remove("flash");
+  void (panel as HTMLElement | null)?.offsetWidth; // restart the animation
+  panel?.classList.add("flash");
 }
 
 async function onSend(e: Event): Promise<void> {
@@ -1046,7 +1060,7 @@ async function onSend(e: Event): Promise<void> {
       h("span", {}, `total ${((performance.now() - t0) / 1000).toFixed(1)} s`),
       h("span", {}, usage ? `${usage.prompt_tokens}/${usage.completion_tokens} tok` : ""),
       h("span", {}, formatSats(r.costMsats ?? 0)),
-      h("button", { type: "button", onclick: () => selectTurn(answer) }, "details"),
+      h("button", { type: "button", onclick: () => showDetails(answer) }, "details"),
     );
     selectTurn(answer);
   } catch (err) {
@@ -1055,7 +1069,7 @@ async function onSend(e: Event): Promise<void> {
     testHook().errors.push(msg);
     answer.el.classList.add("error");
     if (!answer.content) body.textContent = "";
-    meta.replaceChildren(h("span", { class: "cross" }, msg), h("button", { type: "button", onclick: () => selectTurn(answer) }, "details"));
+    meta.replaceChildren(h("span", { class: "cross" }, msg), h("button", { type: "button", onclick: () => showDetails(answer) }, "details"));
     selectTurn(answer);
   } finally {
     busy = false;
