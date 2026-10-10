@@ -1,0 +1,21 @@
+// Model picker: default model and search, against the configured node.  node scripts/models-test.mjs
+import { chromium } from "playwright";
+import { PREFIX, serveDist } from "./serve-dist.mjs";
+const server = await serveDist(4175);
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 390, height: 800 } });
+await page.goto(`http://127.0.0.1:4175${PREFIX}?prewarm=0`);
+await page.waitForFunction(() => document.querySelectorAll("#model option").length > 0, null, { timeout: 30000 });
+const opts = () => page.$$eval("#model option", (o) => o.map((x) => x.value));
+const all = await opts();
+console.log("models:", all.length, "| selected:", await page.$eval("#model", (s) => s.value));
+await page.fill("#model-search", "flash");
+console.log("search 'flash':", await opts());
+await page.fill("#model-search", "zzz-none");
+console.log("search no match keeps selected:", await opts());
+await page.fill("#model-search", "");
+console.log("cleared:", (await opts()).length);
+const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
+console.log("horizontal overflow at 390px:", overflow);
+await page.screenshot({ path: process.env.SHOT ?? "/dev/null" });
+await browser.close(); server.close();

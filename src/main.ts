@@ -192,7 +192,29 @@ function layout(): void {
           h(
             "div",
             { class: "toolbar" },
-            h("select", { id: "model", "aria-label": "Model", onchange: onModelChange }),
+            h(
+              "div",
+              { class: "model-pick" },
+              h("input", {
+                id: "model-search",
+                type: "search",
+                placeholder: "Search models…",
+                "aria-label": "Search models",
+                autocomplete: "off",
+                oninput: () => renderModelOptions(),
+                onkeydown: (e: KeyboardEvent) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    const sel = $<HTMLSelectElement>("model");
+                    if (sel.options[0]) {
+                      sel.value = sel.options[0].value;
+                      onModelChange();
+                    }
+                  }
+                },
+              }),
+              h("select", { id: "model", "aria-label": "Model", onchange: onModelChange }),
+            ),
             h("label", { class: "inline" }, "max tokens", h("input", { id: "max-tokens", type: "number", min: 1, step: 1, style: "width:90px", onchange: onModelChange })),
             h("span", { class: "est", id: "estimate" }),
           ),
@@ -618,16 +640,35 @@ function renderStatus(): void {
   }
 }
 
+const DEFAULT_MODEL = "deepseek-v4-flash-0731";
+
 function renderModels(): void {
+  const saved = load<string>(K.model, "");
+  const want = [saved, DEFAULT_MODEL].find((id) => id && pricing.some((p) => p.id === id)) ?? pricing[0]?.id ?? "";
+  renderModelOptions(want);
+  renderEstimate();
+}
+
+/** The model list, filtered by the search box (every word must match the name or id). */
+function renderModelOptions(want?: string): void {
   const sel = $<HTMLSelectElement>("model");
-  const want = load<string>(K.model, "");
+  const current = want ?? sel.value;
+  const terms = ($<HTMLInputElement>("model-search")?.value ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  const sorted = [...pricing].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id));
+  const shown = sorted.filter((p) => {
+    const hay = `${p.name ?? ""} ${p.id}`.toLowerCase();
+    return p.id === current || terms.every((t) => hay.includes(t));
+  });
+  // Keep the selected model listed (first, if it does not match) so the select never changes on its own.
+  const cur = shown.find((p) => p.id === current);
+  const rest = shown.filter((p) => p !== cur);
+  const matches = cur && terms.length && !terms.every((t) => `${cur.name ?? ""} ${cur.id}`.toLowerCase().includes(t)) ? [...rest, cur] : shown;
   sel.replaceChildren(
-    ...pricing.map((p) =>
-      h("option", { value: p.id, selected: p.id === want }, `${p.name ?? p.id} — in ${formatSats(p.rates.in * 1000)}/M · out ${formatSats(p.rates.out * 1000)}/M`),
+    ...matches.map((p) =>
+      h("option", { value: p.id, selected: p.id === current }, `${p.name ?? p.id} — in ${formatSats(p.rates.in * 1000)}/M · out ${formatSats(p.rates.out * 1000)}/M`),
     ),
   );
-  if (!pricing.some((p) => p.id === want) && pricing[0]) sel.value = pricing[0].id;
-  renderEstimate();
+  if (current) sel.value = current;
 }
 
 function currentModel(): ModelPricing | undefined {
