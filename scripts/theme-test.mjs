@@ -1,0 +1,26 @@
+// Theme toggle: auto follows the system, light/dark override it, the choice persists.
+import { chromium } from "playwright";
+import { PREFIX, serveDist } from "./serve-dist.mjs";
+const server = await serveDist(4179);
+const browser = await chromium.launch();
+const ctx = await browser.newContext({ colorScheme: "dark" });
+const page = await ctx.newPage();
+const bg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+let failed = 0;
+const check = (n, c, x = "") => { console.log(`${c ? "ok  " : "FAIL"} ${n} ${c ? "" : x}`); if (!c) failed++; };
+await page.goto(`http://127.0.0.1:4179${PREFIX}?prewarm=0`);
+await page.waitForSelector("#theme-btn");
+const dark = "rgb(11, 16, 22)", light = "rgb(246, 247, 249)";
+check("auto + system dark = dark", (await bg()) === dark, await bg());
+await page.click("#theme-btn");
+check("light overrides system dark", (await bg()) === light, await bg());
+await page.reload(); await page.waitForSelector("#theme-btn");
+check("light persists after reload", (await bg()) === light && (await page.textContent("#theme-btn")).includes("Light"));
+await page.click("#theme-btn");
+check("dark", (await bg()) === dark);
+await page.emulateMedia({ colorScheme: "light" });
+check("dark stays dark under system light", (await bg()) === dark);
+await page.click("#theme-btn");
+check("auto follows system light", (await bg()) === light && (await page.textContent("#theme-btn")).includes("Auto"));
+await browser.close(); server.close();
+process.exit(failed ? 1 : 0);

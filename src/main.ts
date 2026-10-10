@@ -43,6 +43,7 @@ const K = {
   prewarm: "rc:prewarm",
   remember: "rc:remember",
   timingNumbers: "rc:timing-numbers",
+  theme: "rc:theme",
 };
 
 function load<T>(k: string, d: T): T {
@@ -68,6 +69,24 @@ let credential: string | undefined = load<string | undefined>(K.credential, unde
 // with it. The user can untick it (and the choice is kept).
 let remember = load(K.remember, true);
 let showTimingNumbers = load(K.timingNumbers, false);
+
+// Colour theme: "auto" follows the system; the choice is kept on this device.
+type Theme = "auto" | "light" | "dark";
+let theme: Theme = load<Theme>(K.theme, "auto");
+const THEME_LABEL: Record<Theme, string> = { auto: "◐ Auto", light: "☀ Light", dark: "☾ Dark" };
+function applyTheme(): void {
+  if (theme === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", theme);
+  const dark = theme === "dark" || (theme === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#0b1016" : "#f6f7f9");
+  const b = document.getElementById("theme-btn");
+  if (b) {
+    b.textContent = THEME_LABEL[theme];
+    b.title = `Colour theme: ${theme} (click to change)`;
+  }
+}
+applyTheme();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
 // `?prewarm=0` (tests) or the user's choice in the Costs panel.
 let prewarmOn = new URLSearchParams(location.search).get("prewarm") === "0" ? false : load(K.prewarm, true);
 let mintFees: MintFee[] | undefined;
@@ -185,6 +204,21 @@ function layout(): void {
         h("span", { class: "pill", id: "offer-pill" }, "offer: …"),
         h("span", { class: "pill", id: "warm-pill", title: "Pre-warmed session" }, "pre-warm: off"),
         h("span", { class: "grow" }),
+        h(
+          "button",
+          {
+            type: "button",
+            id: "theme-btn",
+            class: "icon-btn",
+            "aria-label": "Colour theme",
+            onclick: () => {
+              theme = theme === "auto" ? "light" : theme === "light" ? "dark" : "auto";
+              save(K.theme, theme);
+              applyTheme();
+            },
+          },
+          THEME_LABEL[theme],
+        ),
         h("span", { class: "muted", title: `build ${APP_BUILD}` }, `v${APP_VERSION}`),
       ),
       h(
