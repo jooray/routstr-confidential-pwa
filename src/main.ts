@@ -44,6 +44,7 @@ const K = {
   remember: "rc:remember",
   timingNumbers: "rc:timing-numbers",
   theme: "rc:theme",
+  reasoning: "rc:reasoning",
 };
 
 function load<T>(k: string, d: T): T {
@@ -232,6 +233,21 @@ function layout(): void {
             { class: "toolbar" },
             modelPicker.el,
             h("label", { class: "inline" }, "max tokens", h("input", { id: "max-tokens", type: "number", min: 1, step: 1, style: "width:90px", onchange: onModelChange })),
+            h(
+              "label",
+              { class: "inline", title: "reasoning_effort sent to the provider (models that do not support it ignore it). 'model default' sends nothing." },
+              "reasoning",
+              h(
+                "select",
+                {
+                  id: "reasoning",
+                  onchange: (e: Event) => save(K.reasoning, (e.target as HTMLSelectElement).value),
+                },
+                ...["default", "none", "low", "medium", "high"].map((v) =>
+                  h("option", { value: v, selected: v === load(K.reasoning, "default") }, v === "default" ? "model default" : v),
+                ),
+              ),
+            ),
             h("span", { class: "est", id: "estimate" }),
             h("button", { type: "button", id: "clear-chat", class: "secondary", title: "Clear the conversation", onclick: clearChat }, "New chat"),
           ),
@@ -900,6 +916,12 @@ async function onRefund(): Promise<void> {
 
 // ─── chat ───────────────────────────────────────────────────────────────────
 
+/** `reasoning_effort` when one is chosen (sent inside the encrypted body; the node never sees it). */
+function reasoningParam(): { reasoning_effort?: string } {
+  const v = ($<HTMLSelectElement>("reasoning")?.value ?? "default");
+  return v === "default" ? {} : { reasoning_effort: v };
+}
+
 function clearChat(): void {
   if (busy) return toast("Wait for the current answer to finish");
   turns.length = 0;
@@ -962,6 +984,7 @@ async function onSend(e: Event): Promise<void> {
       model: p.id,
       messages: history,
       max_tokens: maxTokens(),
+      ...reasoningParam(),
       stream: true,
     });
     meta.textContent = "streaming (records verified as they decrypt)…";
@@ -994,7 +1017,7 @@ async function onSend(e: Event): Promise<void> {
           { class: "notice" },
           answer.content
             ? `The answer was cut off at the max tokens limit (${maxTokens()}). Raise it to get longer answers.`
-            : `No answer: the model spent all ${maxTokens()} max tokens on reasoning before it started answering. Raise max tokens (up to ${offer?.max_tokens_cap ?? 4096}) and ask again.`,
+            : `No answer: the model spent all ${maxTokens()} max tokens on reasoning before it started answering. Set reasoning to low or none, or raise max tokens (up to ${offer?.max_tokens_cap ?? 4096}), and ask again.`,
         ),
       );
     }

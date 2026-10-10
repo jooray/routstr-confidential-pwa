@@ -224,3 +224,5 @@ label.inline input { width: auto; }
 .wf-dialog-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
 .wf-explain { margin: 14px 0 0; font-size: 13px; line-height: 1.5; }
 @media (max-width: 600px) { .wf.large .wf-row, .wf.large .wf-marker-layer { grid-template-columns: minmax(110px, 36%) 1fr; } .wf-dialog { padding: 12px; } }
+
+#reasoning { width: auto; }
