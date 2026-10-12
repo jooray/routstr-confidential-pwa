@@ -56,8 +56,14 @@ try {
     const { page } = await open();
     const pill = await page.textContent("#offer-pill");
     pill === "offer verified" ? ok("offer fetched and verified (signature, pinned key, trusted host)") : fail(`offer pill: ${pill}`);
-    const models = await page.$$eval("#model option", (o) => o.map((x) => x.value));
-    models.length > 0 ? ok(`models from the signed offer: ${models.join(", ")}`) : fail("no models");
+    // The model picker is a combobox: open it to render the list.
+    await page.click("#model");
+    const models = await page.$$eval("#model-list [role=option]", (o) => o.map((x) => x.textContent ?? ""));
+    await page.keyboard.press("Escape");
+    const selected = await page.inputValue("#model");
+    models.length > 0 && selected
+      ? ok(`${models.length} models from the signed offer (selected: ${selected})`)
+      : fail(`no models (selected: ${selected || "none"})`);
     const est = await page.textContent("#estimate");
     /needs .* available/.test(est ?? "") ? ok(`price estimate: ${est}`) : fail(`estimate: ${est}`);
     const v = await page.evaluate(async () => (await fetch("./version.json", { cache: "no-store" })).json());
@@ -82,7 +88,11 @@ try {
     const n = Number(process.argv[3] ?? 2);
     const model = process.env.MODEL ?? "deepseek-v4-flash-0731";
     const pick = async (page) => {
-      await page.selectOption("#model", model);
+      // The model picker is a combobox: filter by the id and take the first
+      // match (every word must match, so the full id leaves just that model).
+      await page.click("#model");
+      await page.fill("#model", model);
+      await page.press("#model", "Enter");
       await page.fill("#max-tokens", process.env.MAX_TOKENS ?? "256");
       await page.dispatchEvent("#max-tokens", "change");
       console.log(`model ${model}: ${await page.textContent("#estimate")}`);
