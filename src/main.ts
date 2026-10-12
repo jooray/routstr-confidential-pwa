@@ -27,6 +27,7 @@ declare const __LIB_VERSION__: string;
 declare const __LIB_REF__: string;
 const APP_REPO = "https://github.com/jooray/routstr-confidential-pwa";
 const LIB_REPO = "https://github.com/jooray/routstr-confidential-web";
+const HOW_VIDEO = "1235021232"; // Vimeo: "A magic show inside a routstr inference request"
 
 // ─── settings and storage ───────────────────────────────────────────────────
 
@@ -205,6 +206,7 @@ function layout(): void {
         h("span", { class: "pill", id: "offer-pill" }, "offer: …"),
         h("span", { class: "pill", id: "warm-pill", title: "Pre-warmed session" }, "pre-warm: off"),
         h("span", { class: "grow" }),
+        h("button", { type: "button", id: "how-btn", class: "icon-btn", onclick: openHowDialog }, "How does this work?"),
         h(
           "button",
           {
@@ -694,6 +696,56 @@ function openTimelineDialog(r: ConfidentialSessionResult): void {
     if (e.target === dlg) dlg.close();
   });
   dlg.addEventListener("close", () => dlg.remove());
+  document.body.append(dlg);
+  dlg.showModal();
+}
+
+/** Explainer video (Vimeo, loaded only when opened) and links to the guide, the paper and the sources. */
+function openHowDialog(): void {
+  document.getElementById("how-dialog")?.remove();
+  const dlg = document.createElement("dialog");
+  dlg.id = "how-dialog";
+  dlg.className = "wf-dialog how-dialog";
+  const link = (href: string, text: string) => h("a", { href, target: "_blank", rel: "noopener noreferrer" }, text);
+  const GH = "https://github.com/jooray/";
+  const BLOG = "https://juraj.bednar.io/";
+  const iframe = h("iframe", {
+    src: `https://player.vimeo.com/video/${HOW_VIDEO}?badge=0&autopause=0&dnt=1`,
+    title: "A magic show inside a routstr inference request",
+    allow: "autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media; web-share",
+    referrerpolicy: "strict-origin-when-cross-origin",
+    allowFullscreen: true,
+  });
+  dlg.append(
+    h(
+      "div",
+      { class: "wf-dialog-head" },
+      h("strong", {}, "How does this work?"),
+      h("button", { type: "button", class: "icon-btn", "aria-label": "Close", onclick: () => dlg.close() }, "✕"),
+    ),
+    h("div", { class: "how-video" }, iframe),
+    h(
+      "p",
+      { class: "muted" },
+      "The protocol told as a magic show (35 minutes, video from Vimeo). The short written version, with the same video: ",
+      link(`${BLOG}en/blog-en/2026/10/12/seven-magic-tricks-inside-one-ai-request/`, "Seven magic tricks inside one AI request"),
+      ".",
+    ),
+    h(
+      "ul",
+      { class: "how-links" },
+      h("li", {}, "Programmer's guide: ", link(`${BLOG}wp-content/uploads/2026/10/routstr-confidential-for-programmers.pdf`, "How routstr confidential mode works"), " (PDF, 72 pages; ", link(`${BLOG}wp-content/uploads/2026/10/routstr-confidential-pre-programatorov.pdf`, "Slovak edition"), ")"),
+      h("li", {}, "Paper: ", link(`${GH}routstr-confidential/blob/HEAD/paper/paper.pdf`, "Confidential and verifiable upstream inference over standard TLS 1.3")),
+      h("li", {}, "Introduction: ", link(`${BLOG}en/blog-en/2026/10/10/confidential-inference-on-routstr-without-trusted-hardware/`, "Confidential inference on Routstr without trusted hardware"), " (blog post)"),
+      h("li", {}, "Protocol and node sidecar: ", link(`${GH}routstr-confidential`, "routstr-confidential"), " (", link(`${GH}routstr-confidential/blob/HEAD/docs/SETUP.md`, "setup guide"), ")"),
+      h("li", {}, "Browser library: ", link(LIB_REPO, "routstr-confidential-web"), " · this app: ", link(APP_REPO, "routstr-confidential-pwa")),
+      h("li", {}, "Routstr integration branches: ", link(`${GH}routstr-core/tree/confidential-2pc`, "routstr-core"), ", ", link(`${GH}routstr-sdk/tree/confidential-2pc`, "routstr-sdk"), ", ", link(`${GH}routstrd/tree/confidential-upstream`, "routstrd")),
+    ),
+  );
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg) dlg.close();
+  });
+  dlg.addEventListener("close", () => dlg.remove()); // removing the iframe stops the video
   document.body.append(dlg);
   dlg.showModal();
 }
