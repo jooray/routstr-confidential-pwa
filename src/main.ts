@@ -678,7 +678,11 @@ function openTimelineDialog(r: ConfidentialSessionResult): void {
     h(
       "div",
       { class: "wf-dialog-head" },
-      h("strong", {}, `${r.prewarmed ? "Warm (pre-armed)" : "Cold"} request · first token ${ms(r.ttftMs)} · total ${ms(r.totalMs)}`),
+      h(
+        "strong",
+        {},
+        `${r.prewarmed ? "Warm (pre-armed)" : r.waitedForArmMs !== undefined ? "Waited for pre-arm" : "Cold"} request · first token ${ms(r.ttftMs)} · total ${ms(r.totalMs)}`,
+      ),
       h("button", { type: "button", class: "icon-btn", "aria-label": "Close", onclick: () => dlg.close() }, "✕"),
     ),
     waterfall(t.spans ?? [], { ttftMs: r.ttftMs, numbers: true, large: true }),
@@ -688,7 +692,9 @@ function openTimelineDialog(r: ConfidentialSessionResult): void {
       "Time runs left to right; the blue line is when you sent the message. ",
       r.prewarmed
         ? "Everything left of it happened beforehand: the session was set up and the two-party (2PC) preparation, the large part, ran while you were typing. "
-        : "This request had no prepared session, so the 2PC preparation ran after you sent it. ",
+        : r.waitedForArmMs !== undefined
+          ? `A session was still being prepared when you sent the message; the request waited ${ms(r.waitedForArmMs)} for its two-party (2PC) preparation to finish. `
+          : "This request had no prepared session, so the 2PC preparation ran after you sent it. ",
       "After sending: the TLS handshake with the provider, whose keys the browser and the node compute together (2PC phases A and B); π_NK proves the node's credential record matches the published template; the node writes it; the provider starts answering (the red dashed line is the first token). π_C2S proves the pinned model and token cap before the provider sees them, and π_C3S discloses only the usage for the receipt.",
     ),
   );
@@ -1107,7 +1113,7 @@ async function onSend(e: Event): Promise<void> {
     const usage = r.ownUsage?.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
     meta.replaceChildren(
       h("span", { class: "check" }, "verified"),
-      h("span", {}, r.prewarmed ? "warm" : "cold"),
+      h("span", {}, r.prewarmed ? "warm" : r.waitedForArmMs !== undefined ? `waited ${(r.waitedForArmMs / 1000).toFixed(1)} s for pre-arm` : "cold"),
       h("span", {}, `first token ${(r.ttftMs / 1000).toFixed(1)} s`),
       h("span", {}, `total ${((performance.now() - t0) / 1000).toFixed(1)} s`),
       h("span", {}, usage ? `${usage.prompt_tokens}/${usage.completion_tokens} tok` : ""),
