@@ -37,7 +37,8 @@ Worker. That README explains how a request works and the security model.
   - **Withdraw** the whole balance back to a Cashu token or a Lightning
     address, so you never strand sats.
   - Your key is kept in memory. It goes into `localStorage` only if you tick
-    "Remember", with a warning.
+    "Remember on this device" (off by default), with a warning. Closing a
+    tab that holds a funded, unremembered key asks for confirmation.
 - **Costs, in plain language**, all read from the signed offer:
   - The cost per message (usage × signed rates).
   - The balance each model needs: the node reserves the worst case while a

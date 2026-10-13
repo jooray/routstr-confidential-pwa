@@ -67,9 +67,12 @@ function save(k: string, v: unknown): void {
 
 const settings = load(K.settings, { ...DEFAULTS });
 let credential: string | undefined = load<string | undefined>(K.credential, undefined);
-// On by default: a key only in memory is lost with the tab, and its balance
-// with it. The user can untick it (and the choice is kept).
-let remember = load(K.remember, true);
+// Off by default: the key is a bearer credential, and local storage is
+// readable by any script this origin serves. A key kept only in memory is
+// lost with the tab, so the page asks the user to copy it and warns before
+// closing a funded tab. An install that already stored a key before this
+// default changed keeps it until the user unticks the box.
+let remember = load<boolean>(K.remember, credential !== undefined);
 let showTimingNumbers = load(K.timingNumbers, false);
 
 // Colour theme: "auto" follows the system; the choice is kept on this device.
@@ -860,6 +863,13 @@ async function refreshBalance(): Promise<void> {
   } else renderSide();
 }
 
+/** What to tell the user about a new funded key: copy it, and whether it is stored. */
+function fundedKeyNotice(what: string): string {
+  return remember
+    ? `${what} The key is remembered on this device; copy it too, so the balance is not lost if site data is cleared.`
+    : `${what} Copy your key (Wallet → Your key): it is kept only in this tab unless you tick "Remember on this device".`;
+}
+
 function setCredential(key: string | undefined): void {
   credential = key;
   balance = undefined;
@@ -911,7 +921,7 @@ async function onLightning(): Promise<void> {
           box.replaceChildren(h("p", { class: "check" }, `Paid ${st.amount_sats} sat`));
           if (st.api_key && st.api_key !== credential) {
             setCredential(st.api_key);
-            toast("Funded. The key is remembered on this device; copy it too, so the balance is not lost if site data is cleared.", 8000);
+            toast(fundedKeyNotice("Funded."), 10000);
           } else void refreshBalance();
         } else if (st.status === "expired") {
           clearInterval(invoicePoll);
@@ -937,7 +947,7 @@ async function onCashu(): Promise<void> {
     } else {
       const r = await api.createKeyFromCashu(token);
       setCredential(r.api_key);
-      toast("Key created and remembered on this device; copy it too, so the balance is not lost if site data is cleared.", 8000);
+      toast(fundedKeyNotice("Key created."), 10000);
     }
     $<HTMLTextAreaElement>("cashu").value = "";
   } catch (e) {
