@@ -1483,8 +1483,13 @@ async function onSendImage(): Promise<void> {
     ta.value = "";
     imageProgress = undefined;
     const tiles: HTMLElement[] = [];
+    const warnings = [...out.warnings];
     for (const blob of out.images) {
       const small = await reencode(blob);
+      if (!small) {
+        warnings.push("an image could not be decoded in this browser and was not kept");
+        continue;
+      }
       const img: StoredImage = {
         created: Date.now(),
         prompt,
@@ -1512,7 +1517,11 @@ async function onSendImage(): Promise<void> {
       receiptSigOk: out.confidential.receiptSigOk,
       wallMs: Math.round(performance.now() - t0),
     });
-    card.replaceWith(...tiles);
+    // The request was paid: anything short or broken is said, not hidden.
+    const note = warnings.length
+      ? h("div", { class: "msg assistant error" }, h("div", {}, prompt), h("div", { class: "notice" }, `Charged, but: ${warnings.join("; ")}.`))
+      : null;
+    card.replaceWith(...(note ? [note] : []), ...tiles);
     if (tiles[0]) showImageDetails(tiles[0], out.confidential);
   } catch (err) {
     imageProgress = undefined;
@@ -1521,7 +1530,7 @@ async function onSendImage(): Promise<void> {
     } else {
       const msg =
         err instanceof UpstreamImageError
-          ? `The provider refused the request (HTTP ${err.status}). The receipt verified; a refusal costs at most the session fee.`
+          ? `The provider refused the request (HTTP ${err.status}). The receipt verified; a rejected request costs the node's abandon fee (a 429 or 503 its session fee).`
           : friendlyError(err);
       testHook().errors.push(msg);
       card.classList.add("error");

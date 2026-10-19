@@ -41,6 +41,7 @@ const body = {
     response_idle_s: 300,
     count_key: "variants",
     fixed_pins: fixed,
+    param_space: { resolution: ["1K", "2K", "4K"], quality: ["low", "medium", "high"], format: ["webp"] },
     max_count: 4,
     price_list: {
       "z-image-turbo": [{ id: "webp", pins: [["format", "webp"]], msat_per_image: 12164 }],
@@ -185,9 +186,21 @@ for (const vp of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
         document.body.append(img);
       });
       img.remove();
-      return { inSize: src.size, outSize: out.size, type: out.type, width: bmp.width, height: bmp.height, shown };
+      // A tiny image is re-encoded too (never the provider's own file, which
+      // could carry metadata), and an undecodable one is not kept.
+      const tiny = document.createElement("canvas");
+      tiny.width = 8;
+      tiny.height = 8;
+      const tinySrc = await new Promise((res) => tiny.toBlob(res, "image/png"));
+      const tinyOut = await window.__rc.reencode(tinySrc);
+      const junk = await window.__rc.reencode(new Blob([new Uint8Array([1, 2, 3])], { type: "image/webp" }));
+      return {
+        inSize: src.size, outSize: out.size, type: out.type, width: bmp.width, height: bmp.height, shown,
+        tinyReencoded: tinyOut !== tinySrc && tinyOut?.type === "image/webp", junkDropped: junk === undefined,
+      };
     });
     check("re-encode: smaller, at most 1200 px, WebP", r.outSize < r.inSize && r.width === 1200 && r.height === 675 && r.type === "image/webp", JSON.stringify(r));
+    check("re-encode: always redrawn, an undecodable image dropped", r.tinyReencoded && r.junkDropped, JSON.stringify(r));
     check("a stored image renders inline (CSP allows blob:)", r.shown === 1200, JSON.stringify(r));
   }
   await page.close();

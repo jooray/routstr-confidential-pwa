@@ -73,13 +73,18 @@ export async function deleteImage(id: number): Promise<void> {
 
 const MAX_WIDTH = 1200;
 
-/** Re-encode to WebP 0.75 (JPEG 0.8 where WebP encoding is unsupported), at most 1200 px wide. */
-export async function reencode(blob: Blob): Promise<Blob> {
+/**
+ * Re-encode to WebP 0.75 (JPEG 0.8 where WebP encoding is unsupported), at
+ * most 1200 px wide. Always re-encoded, even when that is not smaller: a
+ * redrawn image carries none of the provider file's metadata (which could
+ * hold the prompt). `undefined` when the image cannot be decoded here.
+ */
+export async function reencode(blob: Blob): Promise<Blob | undefined> {
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(blob);
   } catch {
-    return blob; // not decodable here: keep what the provider sent
+    return undefined;
   }
   const scale = Math.min(1, MAX_WIDTH / bitmap.width);
   const w = Math.round(bitmap.width * scale);
@@ -88,12 +93,11 @@ export async function reencode(blob: Blob): Promise<Blob> {
   canvas.width = w;
   canvas.height = hgt;
   const ctx = canvas.getContext("2d");
-  if (!ctx) return blob;
+  if (!ctx) return undefined;
   ctx.drawImage(bitmap, 0, 0, w, hgt);
   bitmap.close();
   const encode = (type: string, q: number) => new Promise<Blob | null>((res) => canvas.toBlob(res, type, q));
   const webp = await encode("image/webp", 0.75);
-  if (webp && webp.type === "image/webp") return webp.size < blob.size ? webp : blob;
-  const jpeg = await encode("image/jpeg", 0.8);
-  return jpeg && jpeg.size < blob.size ? jpeg : blob;
+  if (webp && webp.type === "image/webp") return webp;
+  return (await encode("image/jpeg", 0.8)) ?? undefined;
 }
