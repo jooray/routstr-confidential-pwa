@@ -48,6 +48,13 @@ Worker. That README explains how a request works and the security model.
   - Any session fee or surcharge.
   - Mint input fees (`/v1/keysets` `input_fee_ppk`) and Lightning routing
     fees, shown where you fund or withdraw.
+- **Image generation** through the same confidential session (models,
+  variants and per-image prices from the signed offer; on demand, never
+  pre-armed). Generated images are re-encoded in the browser (no provider
+  metadata kept) and kept in this browser's IndexedDB **together with their
+  prompt, model and receipt**, so the gallery survives a reload. That copy of
+  the prompt is local and unencrypted; delete images from the gallery (or
+  clear the site's data) to remove it.
 - **Pre-warming.** After the key is funded, one session is kept armed (2PC
   done) while the page is visible and you are active, so the first answer
   comes fast. It never arms without a balance. It does not arm if the node's
@@ -59,6 +66,10 @@ Worker. That README explains how a request works and the security model.
   hard refresh. The footer shows the app version and commit, and the library
   version and commit, linked to the sources, so you can check what the page
   runs.
+
+A node on an onion service can be reached as `http://<name>.onion` (the
+page's CSP allows plain `http:`/`ws:` only to `.onion` hosts and localhost),
+which works in Tor Browser.
 
 Defaults: node `https://routstr.cypherpunk.today`, pinned node key
 `2ca46ee98f3134c4e11a638663a45983b590bfdefd31588f9c2f03455fba15e7`, trusted
