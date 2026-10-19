@@ -696,7 +696,7 @@ function verificationPanel(): HTMLElement {
       ),
       waterfall(t.spans ?? [], { ttftMs: r.ttftMs, numbers: showTimingNumbers }),
       !showTimingNumbers ? null : kv([
-        ["first token", ms(r.ttftMs)],
+        [r.images ? "first byte of the image" : "first token", ms(r.ttftMs)],
         ["total", ms(r.totalMs)],
         ["arm (setup + 2PC preprocessing)", r.prewarmed ? `${ms(t.armMs)} (before the request)` : ms(t.armMs)],
         ["2PC key share", ms(t.twoPcKeyShareMs)],
@@ -728,7 +728,7 @@ function openTimelineDialog(r: ConfidentialSessionResult): void {
       h(
         "strong",
         {},
-        `${r.prewarmed ? "Warm (pre-armed)" : r.waitedForArmMs !== undefined ? "Waited for pre-arm" : "Cold"} request · first token ${ms(r.ttftMs)} · total ${ms(r.totalMs)}`,
+        `${r.prewarmed ? "Warm (pre-armed)" : r.waitedForArmMs !== undefined ? "Waited for pre-arm" : "Cold"} ${r.images ? "image request · first byte" : "request · first token"} ${ms(r.ttftMs)} · total ${ms(r.totalMs)}`,
       ),
       h("button", { type: "button", class: "icon-btn", "aria-label": "Close", onclick: () => dlg.close() }, "✕"),
     ),
@@ -742,7 +742,9 @@ function openTimelineDialog(r: ConfidentialSessionResult): void {
         : r.waitedForArmMs !== undefined
           ? `A session was still being prepared when you sent the message; the request waited ${ms(r.waitedForArmMs)} for its two-party (2PC) preparation to finish. `
           : "This request had no prepared session, so the 2PC preparation ran after you sent it. ",
-      "After sending: the TLS handshake with the provider, whose keys the browser and the node compute together (2PC phases A and B); π_NK proves the node's credential record matches the published template; the node writes it; the provider starts answering (the red dashed line is the first token). π_C2S proves the pinned model and token cap before the provider sees them, and π_C3S discloses only the usage for the receipt.",
+      r.images
+        ? "After sending: the TLS handshake with the provider, whose keys the browser and the node compute together (2PC phases A and B); π_NK proves the node's credential record matches the published template; the node writes it; the provider generates the image (the red dashed line is its first byte) and the browser downloads and decrypts it. π_C2S proves the pinned model, resolution and count before the provider sees them. No usage proof is needed: the browser accepts the result and the node charges the signed flat price."
+        : "After sending: the TLS handshake with the provider, whose keys the browser and the node compute together (2PC phases A and B); π_NK proves the node's credential record matches the published template; the node writes it; the provider starts answering (the red dashed line is the first token). π_C2S proves the pinned model and token cap before the provider sees them, and π_C3S discloses only the usage for the receipt.",
     ),
   );
   dlg.addEventListener("click", (e) => {
@@ -1368,7 +1370,7 @@ function imageTile(img: StoredImage, result?: ConfidentialSessionResult): HTMLEl
   const tile: HTMLElement = h(
     "figure",
     { class: "image-tile" },
-    h("img", { src: url, alt: img.prompt, loading: "lazy" }),
+    h("a", { href: url, target: "_blank", rel: "noopener", title: "Open full size" }, h("img", { src: url, alt: img.prompt, loading: "lazy" })),
     h(
       "figcaption",
       {},

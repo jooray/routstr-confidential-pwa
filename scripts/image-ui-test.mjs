@@ -150,9 +150,20 @@ for (const vp of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
       const src = await new Promise((res) => c.toBlob(res, "image/webp", 1));
       const out = await window.__rc.reencode(src);
       const bmp = await createImageBitmap(out);
-      return { inSize: src.size, outSize: out.size, type: out.type, width: bmp.width, height: bmp.height };
+      // The gallery shows stored images through blob: URLs, which the page's
+      // CSP must allow.
+      const img = document.createElement("img");
+      const shown = await new Promise((res) => {
+        img.onload = () => res(img.naturalWidth);
+        img.onerror = () => res(0);
+        img.src = URL.createObjectURL(out);
+        document.body.append(img);
+      });
+      img.remove();
+      return { inSize: src.size, outSize: out.size, type: out.type, width: bmp.width, height: bmp.height, shown };
     });
     check("re-encode: smaller, at most 1200 px, WebP", r.outSize < r.inSize && r.width === 1200 && r.height === 675 && r.type === "image/webp", JSON.stringify(r));
+    check("a stored image renders inline (CSP allows blob:)", r.shown === 1200, JSON.stringify(r));
   }
   await page.close();
 }
