@@ -69,13 +69,18 @@ for (const vp of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
   const page = await browser.newPage({ viewport: vp });
   const sockets = [];
   const sent = [];
+  let holdImageMs = 0;
   await page.routeWebSocket(/fake-node\.test/, (ws) => {
     sockets.push(ws.url());
     ws.onMessage((m) => {
       if (typeof m !== "string") return;
       const msg = JSON.parse(m);
       sent.push(msg);
-      if (msg.type === "setup") ws.send(JSON.stringify({ type: "error", reason: "test node stops here", status: 503 }));
+      if (msg.type === "setup") {
+        const stop = () => ws.send(JSON.stringify({ type: "error", reason: "test node stops here", status: 503 }));
+        if (msg.kind === "images" && holdImageMs) setTimeout(stop, holdImageMs);
+        else stop();
+      }
     });
   });
   await page.route(`${NODE}/**`, (route) => {
@@ -131,6 +136,26 @@ for (const vp of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
   check(`${tag} error shown`, /test node stops here|rejected/i.test(await page.textContent(".image-pending")));
   check(`${tag} no horizontal overflow`, !(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)));
   if (vp.width === 1280) {
+    // Chat activity while an image session runs must not start a chat arm
+    // alongside it; once the image is done the pool may arm again.
+    await page.evaluate(() => {
+      const c = window.__rc.client();
+      c.pricing = async () => Object.keys(c.offerCache?.offer.price_list ?? {}).map((id) => ({ id, reservationMsat: 1 }));
+    });
+    holdImageMs = 2500;
+    const before = sent.length;
+    await page.fill("#prompt", "a fox in the snow");
+    await page.click("#send");
+    await page.waitForFunction(() => document.querySelectorAll(".image-pending:not(.error)").length > 0);
+    await page.evaluate(() => window.__rc.client().prewarmer.activity());
+    await page.waitForTimeout(1500);
+    const during = sent.slice(before).filter((m) => m.type === "setup");
+    check("image session: chat activity arms nothing alongside it", during.length === 1 && during[0].kind === "images", JSON.stringify(during.map((m) => m.kind ?? (m.armed ? "chat-armed" : "chat"))));
+    await page.waitForFunction(() => document.querySelectorAll(".image-pending:not(.error)").length === 0, null, { timeout: 30000 });
+    await page.waitForTimeout(1500);
+    const after = sent.slice(before).filter((m) => m.type === "setup" && m.kind !== "images");
+    check("after the image, the chat pool arms again (the gate was what held it)", after.length >= 1, JSON.stringify(after.length));
+    holdImageMs = 0;
     // A noisy 1792×1008 lossless WebP, as large as a provider image: the
     // re-encode keeps it at most 1200 px wide and much smaller.
     const r = await page.evaluate(async () => {

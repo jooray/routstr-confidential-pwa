@@ -1208,7 +1208,7 @@ function friendlyError(err: unknown): string {
 /** Non-secret outcomes for the browser tests (no credential, no prompt). */
 function testHook(): { results: unknown[]; errors: string[]; renderMarkdown?: (t: string) => string } {
   const w = window as unknown as { __rc?: { results: unknown[]; errors: string[]; renderMarkdown?: (t: string) => string } };
-  w.__rc ??= { results: [], errors: [], renderMarkdown, waterfall, reencode } as never;
+  w.__rc ??= { results: [], errors: [], renderMarkdown, waterfall, reencode, client: () => client } as never;
   return w.__rc;
 }
 
@@ -1498,12 +1498,16 @@ async function onSendImage(): Promise<void> {
       img.id = await putImage(img);
       tiles.push(imageTile(img, out.confidential));
     }
+    // Only the re-encoded copies are kept: the provider's full-size images
+    // would otherwise stay alive through the session result the tiles hold.
+    const received = out.images.length;
+    out.images.length = 0;
     testHook().results.push({
       kind: "images",
       model: out.model,
       variant: out.variant,
       count: out.count,
-      images: out.images.length,
+      images: received,
       costMsats: out.costMsats,
       receiptSigOk: out.confidential.receiptSigOk,
       wallMs: Math.round(performance.now() - t0),
