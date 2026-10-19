@@ -11,6 +11,10 @@ import {
   offerAbandonFeeMsat,
   offerSessionFeeMsat,
   SessionRejectedError,
+  UpstreamImageError,
+  offerImages,
+  type ConfidentialImagesOffer,
+  type ConfidentialImageVariant,
   type MintFee,
   roughTokens,
   costMsat,
@@ -21,6 +25,7 @@ import {
   type VerifiedOffer,
 } from "@routstr/confidential-web";
 import { APP_BUILD, APP_VERSION, idle, setupPwa } from "./pwa";
+import { deleteImage, listImages, putImage, reencode, type StoredImage } from "./imagestore";
 
 declare const __GIT_SHA__: string;
 declare const __LIB_VERSION__: string;
@@ -46,6 +51,12 @@ const K = {
   timingNumbers: "rc:timing-numbers",
   theme: "rc:theme",
   reasoning: "rc:reasoning",
+  mode: "rc:mode",
+  imgModel: "rc:img-model",
+  imgVariant: "rc:img-variant",
+  imgAspect: "rc:img-aspect",
+  imgCount: "rc:img-count",
+  meteredWarned: "rc:metered-warned",
 };
 
 function load<T>(k: string, d: T): T {
@@ -164,12 +175,17 @@ let selected: Turn | undefined;
 const turns: Turn[] = [];
 const events: string[] = [];
 let prewarmStatus = "off";
+/** Chat, or confidential image generation (on demand only, never pre-armed). */
+let mode: "chat" | "image" = load<"chat" | "image">(K.mode, "chat");
+/** The progress line of the image request in flight. */
+let imageProgress: HTMLElement | undefined;
 
 function logEvent(e: Record<string, unknown>): void {
   const { t, ...rest } = e;
   const line = `${new Date(Number(t) || Date.now()).toLocaleTimeString()} ${JSON.stringify(rest)}`;
   events.push(line);
   if (events.length > 300) events.shift();
+  if (e.kind === "images") imageProgressEvent(e);
   if (e.ev === "prewarm" && typeof e.status === "string") {
     prewarmStatus = e.status;
     renderStatus();
@@ -236,6 +252,16 @@ function layout(): void {
           h(
             "div",
             { class: "toolbar" },
+            h(
+              "span",
+              { class: "mode-switch", role: "group", "aria-label": "Mode" },
+              h("button", { type: "button", id: "mode-chat", onclick: () => setMode("chat") }, "Chat"),
+              h("button", { type: "button", id: "mode-image", onclick: () => setMode("image") }, "Image"),
+            ),
+            h("span", { class: "toolbar-group", id: "image-controls" }, ...imageControls()),
+            h(
+              "span",
+              { class: "toolbar-group", id: "chat-controls" },
             modelPicker.el,
             h("label", { class: "inline" }, "max tokens", h("input", { id: "max-tokens", type: "number", min: 1, step: 1, style: "width:90px", onchange: onModelChange })),
             h(
@@ -255,8 +281,10 @@ function layout(): void {
             ),
             h("span", { class: "est", id: "estimate" }),
             h("button", { type: "button", id: "clear-chat", class: "secondary", title: "Clear the conversation", onclick: clearChat }, "New chat"),
+            ),
           ),
           h("div", { class: "messages", id: "messages" }, emptyState()),
+          h("div", { class: "messages gallery", id: "gallery" }),
           h(
             "form",
             { class: "composer", onsubmit: onSend },
@@ -264,11 +292,14 @@ function layout(): void {
               id: "prompt",
               rows: 2,
               placeholder: "Ask something. The node relays it encrypted; only the provider and you can read it.",
+              // Typing an image prompt must not arm a chat session.
               oninput: () => {
-                client?.activity();
+                if (mode === "chat") client?.activity();
                 renderEstimate();
               },
-              onfocus: () => client?.activity(),
+              onfocus: () => {
+                if (mode === "chat") client?.activity();
+              },
               onkeydown: (e: KeyboardEvent) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -288,6 +319,7 @@ function layout(): void {
   // 1024 was the old default: move it up too.
   const savedMax = load<number>(K.maxTokens, 4096);
   $<HTMLInputElement>("max-tokens").value = String(savedMax === 1024 ? 4096 : savedMax);
+  applyMode();
 }
 
 /** What this page runs, so users can check it against the sources. */
@@ -597,7 +629,9 @@ function verificationPanel(): HTMLElement {
         ["2PC handshake", check(true, `key schedule run jointly · A ${ms(t.twoPcPhaseAMs)} · B ${ms(t.twoPcPhaseBMs)}`)],
         proofRow("pi_nk", "π_NK (node key record)"),
         proofRow("pi_c2s", "π_C2S (pinned suffix)"),
-        proofRow("pi_c3s", "π_C3S (usage disclosure)"),
+        r.imageVariant !== undefined && !t.proofs?.pi_c3s
+          ? ["π_C3S (usage disclosure)", check(true, "not needed: flat price fixed at setup")]
+          : proofRow("pi_c3s", "π_C3S (usage disclosure)"),
         ["attestation", check(r.attestationSigOk, "signature valid")],
       ]),
     ),
@@ -607,7 +641,17 @@ function verificationPanel(): HTMLElement {
       h("strong", {}, "Receipt"),
       kv([
         ["signature", check(r.receiptSigOk, "valid (node key)")],
-        ["usage", check(r.usageMatch, usage ? `${usage.prompt_tokens} in / ${usage.completion_tokens} out (matches our plaintext)` : "error response")],
+        r.imageVariant !== undefined
+          ? [
+              "charge",
+              check(
+                r.usageMatch,
+                r.http.status >= 400
+                  ? `provider error ${r.http.status}`
+                  : `${r.imageCount} × ${formatSats(Number(r.receipt.msat_per_image ?? 0))} (${r.imageVariant}, the signed flat price)`,
+              ),
+            ]
+          : ["usage", check(r.usageMatch, usage ? `${usage.prompt_tokens} in / ${usage.completion_tokens} out (matches our plaintext)` : "error response")],
         ["cost", check(r.costWithinOffer, `${formatSats(r.costMsats ?? 0)} (≤ signed rates${fee ? " + session fee" : ""})`)],
         [
           "at the rates",
@@ -1035,6 +1079,7 @@ function showDetails(t: Turn): void {
 
 async function onSend(e: Event): Promise<void> {
   e.preventDefault();
+  if (mode === "image") return onSendImage();
   if (busy || !client) return;
   const ta = $<HTMLTextAreaElement>("prompt");
   const text = ta.value.trim();
@@ -1161,8 +1206,332 @@ function friendlyError(err: unknown): string {
 /** Non-secret outcomes for the browser tests (no credential, no prompt). */
 function testHook(): { results: unknown[]; errors: string[]; renderMarkdown?: (t: string) => string } {
   const w = window as unknown as { __rc?: { results: unknown[]; errors: string[]; renderMarkdown?: (t: string) => string } };
-  w.__rc ??= { results: [], errors: [], renderMarkdown, waterfall } as never;
+  w.__rc ??= { results: [], errors: [], renderMarkdown, waterfall, reencode } as never;
   return w.__rc;
+}
+
+// ─── image mode ─────────────────────────────────────────────────────────────
+// Confidential image generation: one cold session per request (never
+// pre-armed), flat-priced at the signed offer's per-image price. The prompt
+// and the aspect ratio stay private; the node sees the model, the resolution
+// tier and the count it charges for.
+
+const ASPECTS = ["16:9", "4:3", "1:1"];
+const PREFERRED_IMAGE_MODEL = "qwen-image-2-1-turbo";
+/** Protocol data per image (2PC ~22 MB down, ~1.2 MB up, proofs), before the image itself. */
+const SETUP_MB_PER_IMAGE = 26;
+let galleryLoaded = false;
+let imageBodySent = false;
+
+function imagesOffer(): ConfidentialImagesOffer | undefined {
+  return offer ? offerImages(offer) : undefined;
+}
+
+function imageControls(): Child[] {
+  const sel = (id: string, onchange: () => void) => h("select", { id, onchange });
+  return [
+    h("label", { class: "inline" }, "model", sel("img-model", onImageModelChange)),
+    h(
+      "label",
+      { class: "inline", id: "img-variant-label" },
+      "resolution",
+      sel("img-variant", () => {
+        save(K.imgVariant, $<HTMLSelectElement>("img-variant").value);
+        renderImageEstimate();
+      }),
+    ),
+    h(
+      "label",
+      { class: "inline", title: "Private: sent inside the encrypted request, the node does not see it" },
+      "aspect",
+      h(
+        "select",
+        { id: "img-aspect", onchange: (e: Event) => save(K.imgAspect, (e.target as HTMLSelectElement).value) },
+        ...ASPECTS.map((a) => h("option", { value: a, selected: a === load(K.imgAspect, "16:9") }, a)),
+      ),
+    ),
+    h(
+      "label",
+      { class: "inline", title: "Images in one request (one confidential session)" },
+      "images",
+      sel("img-count", () => {
+        save(K.imgCount, Number($<HTMLSelectElement>("img-count").value));
+        renderImageEstimate();
+      }),
+    ),
+    h("span", { class: "est", id: "img-estimate" }),
+  ];
+}
+
+function cheapest(variants: ConfidentialImageVariant[]): number {
+  return Math.min(...variants.map((v) => v.msat_per_image));
+}
+
+/** Fill the image controls from the signed offer. */
+function renderImageControls(): void {
+  const im = imagesOffer();
+  const modelSel = document.getElementById("img-model") as HTMLSelectElement | null;
+  if (!modelSel) return;
+  const models = im ? Object.keys(im.price_list).sort((a, b) => cheapest(im.price_list[a]!) - cheapest(im.price_list[b]!) || a.localeCompare(b)) : [];
+  const saved = load<string>(K.imgModel, "");
+  const want = [saved, PREFERRED_IMAGE_MODEL].find((m) => m && models.includes(m)) ?? models[0] ?? "";
+  modelSel.replaceChildren(
+    ...models.map((m) => h("option", { value: m, selected: m === want }, `${m} · ${formatSats(cheapest(im!.price_list[m]!))}`)),
+  );
+  const countSel = $<HTMLSelectElement>("img-count");
+  const max = im?.max_count ?? 1;
+  const savedCount = Math.min(load<number>(K.imgCount, 1), max);
+  countSel.replaceChildren(...Array.from({ length: max }, (_, i) => h("option", { value: i + 1, selected: i + 1 === savedCount }, String(i + 1))));
+  onImageModelChange();
+}
+
+function onImageModelChange(): void {
+  const im = imagesOffer();
+  const model = (document.getElementById("img-model") as HTMLSelectElement | null)?.value ?? "";
+  if (model) save(K.imgModel, model);
+  const variants = im?.price_list[model] ?? [];
+  const saved = load<string>(K.imgVariant, "");
+  const sel = $<HTMLSelectElement>("img-variant");
+  sel.replaceChildren(
+    ...variants.map((v) => h("option", { value: v.id, selected: v.id === saved }, `${v.id} · ${formatSats(v.msat_per_image)}`)),
+  );
+  $("img-variant-label").hidden = variants.length <= 1;
+  renderImageEstimate();
+}
+
+function imageChoice(): { model: string; variant: ConfidentialImageVariant; count: number; aspect: string } | undefined {
+  const im = imagesOffer();
+  const model = (document.getElementById("img-model") as HTMLSelectElement | null)?.value ?? "";
+  const variants = im?.price_list[model];
+  if (!variants?.length) return undefined;
+  const id = $<HTMLSelectElement>("img-variant").value;
+  const variant = variants.find((v) => v.id === id) ?? variants[0]!;
+  const count = Math.max(1, Number($<HTMLSelectElement>("img-count").value) || 1);
+  return { model, variant, count, aspect: $<HTMLSelectElement>("img-aspect").value || "16:9" };
+}
+
+function renderImageEstimate(): void {
+  const el = document.getElementById("img-estimate");
+  if (!el) return;
+  if (!imagesOffer()) {
+    el.textContent = offer ? "This node does not offer confidential image generation." : "";
+    return;
+  }
+  const c = imageChoice();
+  if (!c) return;
+  const fee = offerSessionFeeMsat(offer!);
+  const total = c.variant.msat_per_image * c.count + fee;
+  const abandon = offerAbandonFeeMsat(offer!);
+  el.textContent =
+    `${formatSats(c.variant.msat_per_image)} per image · ${formatSats(total)} for ${c.count}` +
+    (fee ? ` (incl. session fee ${formatSats(fee)})` : "") +
+    ` · about ${SETUP_MB_PER_IMAGE} MB of setup data per request (no pre-warm: each request sets up its own session)` +
+    (abandon ? ` · cancelled before sending: ${formatSats(abandon)}` : "");
+}
+
+function setMode(m: "chat" | "image"): void {
+  if (busy) return toast("Wait for the current request to finish");
+  mode = m;
+  save(K.mode, m);
+  applyMode();
+}
+
+function applyMode(): void {
+  const image = mode === "image";
+  $("chat-controls").hidden = image;
+  $("image-controls").hidden = !image;
+  $("messages").hidden = image;
+  $("gallery").hidden = !image;
+  $("mode-chat").setAttribute("aria-pressed", String(!image));
+  $("mode-image").setAttribute("aria-pressed", String(image));
+  $<HTMLTextAreaElement>("prompt").placeholder = image
+    ? "Describe the image. The node relays it encrypted; it sees only the model, resolution and count it charges for."
+    : "Ask something. The node relays it encrypted; only the provider and you can read it.";
+  $("send").textContent = image ? "Generate" : "Send";
+  if (image && !galleryLoaded) void loadGallery();
+  if (image) renderImageEstimate();
+}
+
+async function loadGallery(): Promise<void> {
+  galleryLoaded = true;
+  const g = $("gallery");
+  const stored = await listImages();
+  if (!stored.length) {
+    g.replaceChildren(h("div", { class: "empty", id: "gallery-empty" }, h("p", {}, "Images you generate appear here. They are kept only in this browser."), h("p", { class: "muted" }, "Each request is a confidential session of its own: the provider receives your prompt encrypted end to end, and the node charges the signed flat price.")));
+    return;
+  }
+  g.replaceChildren(...stored.map((img) => imageTile(img)));
+}
+
+function imageTile(img: StoredImage, result?: ConfidentialSessionResult): HTMLElement {
+  const url = URL.createObjectURL(img.blob);
+  const tile: HTMLElement = h(
+    "figure",
+    { class: "image-tile" },
+    h("img", { src: url, alt: img.prompt, loading: "lazy" }),
+    h(
+      "figcaption",
+      {},
+      h("div", {}, img.prompt),
+      h(
+        "div",
+        { class: "meta" },
+        h("span", {}, `${img.model} · ${img.variant}`),
+        h("span", {}, formatSats(img.costMsats)),
+        h("span", {}, `${Math.round(img.blob.size / 1024)} KB`),
+        h("a", { href: url, download: `image-${img.created}.${img.blob.type === "image/jpeg" ? "jpg" : "webp"}` }, "download"),
+        result ? h("button", { type: "button", onclick: () => showImageDetails(tile, result) }, "details") : null,
+        h(
+          "button",
+          {
+            type: "button",
+            onclick: async () => {
+              if (img.id !== undefined) await deleteImage(img.id);
+              URL.revokeObjectURL(url);
+              tile.remove();
+            },
+          },
+          "delete",
+        ),
+      ),
+    ),
+  );
+  return tile;
+}
+
+function showImageDetails(el: HTMLElement, result: ConfidentialSessionResult): void {
+  selected = { role: "assistant", content: "", el, result };
+  renderSide();
+  document.getElementById("verification")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/** On a metered connection, say once what an image request costs in data. */
+function meteredOk(): boolean {
+  const c = (navigator as unknown as { connection?: { saveData?: boolean; type?: string; effectiveType?: string } }).connection;
+  const metered = !!c && (c.saveData === true || c.type === "cellular" || /(^|-)(2g|3g)$/.test(c.effectiveType ?? ""));
+  if (!metered || load(K.meteredWarned, false)) return true;
+  save(K.meteredWarned, true);
+  return confirm(
+    `Each confidential image request moves about ${SETUP_MB_PER_IMAGE} MB of setup data (the two-party handshake and the proofs) before the image itself. Continue on this connection?`,
+  );
+}
+
+const IMAGE_STAGES: Record<string, string> = {
+  request: "starting a confidential session…",
+  ready: "secure setup: the node checked the key and reserved the price…",
+  twopc_key_share: "secure setup done (2PC key share); TLS handshake with the provider…",
+  hs_verified: "provider certificate and handshake verified; proving the node's key record…",
+  pi_nk_ok: "node's key record proven; writing the request…",
+  head_written: "request head written; sending the encrypted prompt…",
+  body_sent: "request sent; waiting for the provider…",
+  pi_c2s_ok: "pinned price parameters proven; waiting for the image…",
+  attestation: "verifying the response and the node's attestation…",
+};
+
+function imageProgressEvent(e: Record<string, unknown>): void {
+  if (e.ev === "body_sent") imageBodySent = true;
+  if (!imageProgress) return;
+  if (e.ev === "response_progress" && typeof e.bytes === "number") {
+    imageProgress.textContent = `downloading the image (${(e.bytes / 1e6).toFixed(1)} MB)…`;
+    return;
+  }
+  const text = IMAGE_STAGES[String(e.ev)];
+  if (text) imageProgress.textContent = text;
+}
+
+async function onSendImage(): Promise<void> {
+  if (busy || !client) return;
+  const ta = $<HTMLTextAreaElement>("prompt");
+  const prompt = ta.value.trim();
+  if (!prompt) return;
+  if (!credential) return toast("Fund the wallet first (Lightning or Cashu)");
+  if (!imagesOffer()) return toast("This node does not offer confidential image generation");
+  const c = imageChoice();
+  if (!c) return toast("No image model available");
+  if (!meteredOk()) return;
+  document.getElementById("gallery-empty")?.remove();
+  const progress = h("div", { class: "meta" }, "starting a confidential session…");
+  const ctrl = new AbortController();
+  const fee = offerAbandonFeeMsat(offer!);
+  const cancel = h(
+    "button",
+    {
+      type: "button",
+      onclick: () => {
+        ctrl.abort();
+        progress.textContent = imageBodySent
+          ? "Cancelled after the request reached the provider: it is charged."
+          : `Cancelled before the request was sent: the reservation is released${fee ? ` (less the unused-session fee ${formatSats(fee)})` : ""}.`;
+      },
+    },
+    "cancel",
+  );
+  const card = h("div", { class: "msg assistant image-pending" }, h("div", {}, prompt), progress, cancel);
+  $("gallery").prepend(card);
+  imageProgress = progress;
+  imageBodySent = false;
+  busy = true;
+  $<HTMLButtonElement>("send").disabled = true;
+  const t0 = performance.now();
+  try {
+    const out = await client.images.generate(
+      { model: c.model, prompt, count: c.count, variant: c.variant.id, aspectRatio: c.aspect },
+      { signal: ctrl.signal },
+    );
+    ta.value = "";
+    imageProgress = undefined;
+    const tiles: HTMLElement[] = [];
+    for (const blob of out.images) {
+      const small = await reencode(blob);
+      const img: StoredImage = {
+        created: Date.now(),
+        prompt,
+        model: out.model,
+        variant: out.variant,
+        costMsats: Math.round(out.costMsats / Math.max(1, out.images.length)),
+        sid: out.confidential.sid,
+        receiptJson: out.confidential.receiptJson,
+        blob: small,
+      };
+      img.id = await putImage(img);
+      tiles.push(imageTile(img, out.confidential));
+    }
+    testHook().results.push({
+      kind: "images",
+      model: out.model,
+      variant: out.variant,
+      count: out.count,
+      images: out.images.length,
+      costMsats: out.costMsats,
+      receiptSigOk: out.confidential.receiptSigOk,
+      wallMs: Math.round(performance.now() - t0),
+    });
+    card.replaceWith(...tiles);
+    if (tiles[0]) showImageDetails(tiles[0], out.confidential);
+  } catch (err) {
+    imageProgress = undefined;
+    if (ctrl.signal.aborted) {
+      cancel.remove();
+    } else {
+      const msg =
+        err instanceof UpstreamImageError
+          ? `The provider refused the request (HTTP ${err.status}). The receipt verified; a refusal costs at most the session fee.`
+          : friendlyError(err);
+      testHook().errors.push(msg);
+      card.classList.add("error");
+      const details =
+        err instanceof UpstreamImageError
+          ? h("button", { type: "button", onclick: () => showImageDetails(card, err.result as ConfidentialSessionResult) }, "details")
+          : null;
+      progress.replaceChildren(h("span", { class: "cross" }, msg));
+      cancel.replaceWith(...(details ? [details] : []));
+    }
+  } finally {
+    busy = false;
+    $<HTMLButtonElement>("send").disabled = false;
+    void refreshBalance();
+    idle();
+  }
 }
 
 // ─── settings / boot ────────────────────────────────────────────────────────
@@ -1186,6 +1555,7 @@ async function restart(): Promise<void> {
     offer = await client!.offer();
     pricing = await client!.pricing(maxTokens());
     renderModels();
+    renderImageControls();
     void mintInputFees(offer.mints ?? []).then((f) => {
       mintFees = f;
       renderSide();
