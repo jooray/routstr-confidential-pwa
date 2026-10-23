@@ -479,8 +479,8 @@ function costsCard(): HTMLElement {
       {},
       h("strong", {}, "Pre-warming: "),
       abandon > 0
-        ? `keeping a session ready makes the first answer faster. It costs nothing if you use it; a prepared session you never use costs ${formatSats(abandon)} (the node's fee for the work it already did). It is only prepared while this page is visible and you have funds.`
-        : "keeping a session ready makes the first answer faster and costs nothing extra. It is only prepared while this page is visible and you have funds.",
+        ? `after your first message, keeping a session ready makes the next answers faster. It costs nothing if you use it; a prepared session you never use costs ${formatSats(abandon)} (the node's fee for the work it already did). It is only prepared while this page is visible and you have funds.`
+        : "after your first message, keeping a session ready makes the next answers faster and costs nothing extra. It is only prepared while this page is visible and you have funds.",
     ),
     h(
       "label",

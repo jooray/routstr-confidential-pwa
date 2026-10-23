@@ -55,9 +55,9 @@ Worker. That README explains how a request works and the security model.
   prompt, model and receipt**, so the gallery survives a reload. That copy of
   the prompt is local and unencrypted; delete images from the gallery (or
   clear the site's data) to remove it.
-- **Pre-warming.** After the key is funded, one session is kept armed (2PC
-  done) while the page is visible and you are active, so the first answer
-  comes fast. It never arms without a balance. It does not arm if the node's
+- **Pre-warming.** After your first message with a funded key, one session
+  is kept armed (2PC done) while the page is visible and you are active, so
+  the next answers come fast. The first message runs cold. It never arms without a balance. It does not arm if the node's
   unused-session fee is above 5 sats. You can turn it off.
 - **Versioned releases with automatic update.** The page checks
   `version.json` on load, when it becomes visible, and every 5 minutes. On a
