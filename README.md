@@ -123,6 +123,10 @@ npm run build
 node scripts/e2e-prod.mjs smoke     # production node, no money: signed offer verified, models and prices,
                                     # service worker and version.json, an invalid key refused at setup
 node scripts/update-test.mjs        # automatic update: build A, open, build B, page reloads into B with the notice
+node scripts/wallet-test.mjs        # fake nodes: keys per node URL, one poll per invoice, a different paid key
+                                    # offered not swapped, withdraw waits for reserved = 0, an update reload
+                                    # keeps the in-memory key/token/invoices, oversized body refused
+node scripts/image-ui-test.mjs      # fake node: image mode controls and setup
 CONF_TEST_KEY=sk-… node scripts/e2e-prod.mjs live 2
                                     # funded key from the environment (never logged): one cold request,
                                     # then pre-warmed ones; prints verified timings, proofs, receipt, certificate

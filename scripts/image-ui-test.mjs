@@ -30,7 +30,8 @@ const body = {
   key_length: 63,
   head_template:
     "POST /api/v1/chat/completions HTTP/1.1\r\nHost: api.venice.ai\r\nAuthorization: Bearer {KEY:63}\r\nContent-Type: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\nContent-Length: {LEN}\r\n\r\n",
-  suffix_keys: ["model", "max_tokens"],
+  suffix_keys: ["model", "max_tokens", "stream", "stream_options"],
+  chat: { cap_keys: ["max_tokens"], fixed_pins: [["stream", true], ["stream_options", { include_usage: true }]] },
   price_list: { "deepseek-v4-flash-0731": { in: 160, cached_in: 34, out: 320 } },
   abandon_fee_msat: 2000,
   capabilities: ["chat", "images"],
@@ -142,6 +143,8 @@ for (const vp of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
     await page.evaluate(() => {
       const c = window.__rc.client();
       c.pricing = async () => Object.keys(c.offerCache?.offer.price_list ?? {}).map((id) => ({ id, reservationMsat: 1 }));
+      // Pre-warm arms only after a first chat request with the current key.
+      c.prewarmer.noteRequest();
     });
     holdImageMs = 2500;
     const before = sent.length;

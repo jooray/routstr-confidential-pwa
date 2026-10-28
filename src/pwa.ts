@@ -5,9 +5,11 @@
  * becomes visible and every 5 minutes. A new version makes the service
  * worker update; the new worker activates at once (skipWaiting +
  * clients.claim) and the page reloads on `controllerchange` — deferred while
- * a confidential request is in flight — and then shows "Updated to vX".
- * Without a worker change (no service worker, a blocked or failed install) it
- * reloads once per new version.
+ * a confidential request or a wallet operation is in flight — and then shows
+ * "Updated to vX". Without a worker change (no service worker, a blocked or
+ * failed install) it reloads once per new version. Right before any automatic
+ * reload the page's `beforeReload` hook runs, so state that lives only in
+ * memory (a key not remembered, a withdrawn token) survives it.
  */
 
 declare const __APP_VERSION__: string;
@@ -27,12 +29,18 @@ const RETRY_MS = 15 * 60_000;
 let busy = () => false;
 let pendingReload = false;
 let toast: (msg: string) => void = () => {};
+let beforeReload: () => void = () => {};
 
 function reload(): void {
   if (busy()) {
     pendingReload = true;
-    toast("A new version is ready; it loads when the current answer finishes.");
+    toast("A new version is ready; it loads when the current request finishes.");
     return;
+  }
+  try {
+    beforeReload();
+  } catch {
+    /* the reload must still happen */
   }
   try {
     sessionStorage.setItem(FLAG, APP_VERSION);
@@ -75,9 +83,15 @@ async function remoteVersion(): Promise<string | undefined> {
   }
 }
 
-export function setupPwa(opts: { isBusy: () => boolean; toast: (msg: string) => void }): void {
+export function setupPwa(opts: {
+  isBusy: () => boolean;
+  toast: (msg: string) => void;
+  /** Runs synchronously right before an automatic reload (stash in-memory state in sessionStorage). */
+  beforeReload?: () => void;
+}): void {
   busy = opts.isBusy;
   toast = opts.toast;
+  beforeReload = opts.beforeReload ?? (() => {});
   try {
     const from = sessionStorage.getItem(FLAG);
     if (from) {

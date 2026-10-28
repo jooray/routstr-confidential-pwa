@@ -20,6 +20,7 @@ import {
   costMsat,
   type BalanceInfo,
   type ConfidentialClient,
+  type ConfidentialStream,
   type ConfidentialSessionResult,
   type ModelPricing,
   type VerifiedOffer,
@@ -43,7 +44,10 @@ const DEFAULTS = {
 };
 const K = {
   settings: "rc:settings",
+  /** Legacy single key (migrated to `credentials`). */
   credential: "rc:credential",
+  /** Remembered keys, per node URL. */
+  credentials: "rc:credentials",
   model: "rc:model",
   maxTokens: "rc:max-tokens",
   prewarm: "rc:prewarm",
@@ -76,14 +80,94 @@ function save(k: string, v: unknown): void {
   }
 }
 
+/** Tab-scoped state (sessionStorage): it survives a reload of this tab, nothing else. */
+const SK = {
+  /** In-memory wallet state written right before an automatic update reload, restored (and removed) at boot. */
+  stash: "rc:reload-stash",
+  /** Lightning invoices still waiting for payment. */
+  invoices: "rc:invoices",
+};
+function sload<T>(k: string, d: T): T {
+  try {
+    const v = sessionStorage.getItem(k);
+    return v ? (JSON.parse(v) as T) : d;
+  } catch {
+    return d;
+  }
+}
+function ssave(k: string, v: unknown): void {
+  try {
+    if (v === undefined) sessionStorage.removeItem(k);
+    else sessionStorage.setItem(k, JSON.stringify(v));
+  } catch {
+    /* storage unavailable */
+  }
+}
+function stringMap(v: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    for (const [k, x] of Object.entries(v)) if (typeof x === "string" && x) out[k] = x;
+  }
+  return out;
+}
+
 const settings = load(K.settings, { ...DEFAULTS });
-let credential: string | undefined = load<string | undefined>(K.credential, undefined);
+/**
+ * The keys this tab holds, per node URL. A key is a bearer credential for the
+ * node that issued it, so it is only ever sent to that node: changing the
+ * node URL switches to the key kept for the new node (or none).
+ */
+const nodeKeys: Record<string, string> = stringMap(load<unknown>(K.credentials, {}));
+// Earlier versions kept a single key for whichever node was configured.
+const legacyKey = load<string | undefined>(K.credential, undefined);
+if (typeof legacyKey === "string" && legacyKey && !nodeKeys[settings.node]) nodeKeys[settings.node] = legacyKey;
 // Off by default: the key is a bearer credential, and local storage is
 // readable by any script this origin serves. A key kept only in memory is
 // lost with the tab, so the page asks the user to copy it and warns before
 // closing a funded tab. An install that already stored a key before this
 // default changed keeps it until the user unticks the box.
-let remember = load<boolean>(K.remember, credential !== undefined);
+let remember = load<boolean>(K.remember, Object.keys(nodeKeys).length > 0);
+function persistKeys(): void {
+  save(K.credentials, remember && Object.keys(nodeKeys).length ? nodeKeys : undefined);
+}
+if (legacyKey !== undefined) {
+  save(K.credential, undefined);
+  persistKeys();
+}
+
+/** A paid Lightning invoice whose key differs from the key in use: shown, never swapped in silently. */
+interface KeyOffer {
+  node: string;
+  key: string;
+  amountSats: number;
+}
+/** A Cashu token from Withdraw, shown until the user says it is saved. */
+let refundToken: string | undefined;
+let keyOffers: KeyOffer[] = [];
+/** Set once an automatic reload has stashed the state: the unload guard then stays quiet. */
+let autoReloading = false;
+// Restore what the last automatic update reload stashed, then drop the stash.
+{
+  const s = sload<{ keys?: unknown; refundToken?: unknown; keyOffers?: unknown } | undefined>(SK.stash, undefined);
+  ssave(SK.stash, undefined);
+  if (s && typeof s === "object") {
+    for (const [n, k] of Object.entries(stringMap(s.keys))) nodeKeys[n] ??= k;
+    if (typeof s.refundToken === "string" && s.refundToken) refundToken = s.refundToken;
+    if (Array.isArray(s.keyOffers)) {
+      keyOffers = s.keyOffers.filter(
+        (o): o is KeyOffer => !!o && typeof o.node === "string" && typeof o.key === "string" && typeof o.amountSats === "number",
+      );
+    }
+  }
+}
+/** Before an automatic update reload: keep in this tab what lives only in memory. */
+function stashForReload(): void {
+  autoReloading = true;
+  ssave(SK.stash, { keys: nodeKeys, refundToken, keyOffers });
+}
+/** The node whose key `credential` is (the one the client talks to). */
+let activeNode = settings.node;
+let credential: string | undefined = nodeKeys[activeNode];
 let showTimingNumbers = load(K.timingNumbers, false);
 
 // Colour theme: "auto" follows the system; the choice is kept on this device.
@@ -321,9 +405,6 @@ function layout(): void {
                 if (mode === "chat") client?.activity();
                 renderEstimate();
               },
-              onfocus: () => {
-                if (mode === "chat") client?.activity();
-              },
               onpaste: (e: ClipboardEvent) => {
                 if (mode !== "chat") return;
                 const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
@@ -331,7 +412,10 @@ function layout(): void {
                 e.preventDefault();
                 void addAttachments(files);
               },
+              // Typing is activity; focus is not (it fires again when the tab
+              // returns, which must not re-arm a session by itself).
               onkeydown: (e: KeyboardEvent) => {
+                if (mode === "chat") client?.activity();
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   $("send").click();
@@ -405,6 +489,7 @@ function renderSide(): void {
 
 function walletCard(): HTMLElement {
   const card = h("div", { class: "card" });
+  card.append(h("div", { id: "refund-token" }, ...refundTokenBox()), h("div", { id: "key-offers" }, ...keyOfferBoxes()));
   if (credential) {
     const avail = balance ? balance.balance - balance.reserved : undefined;
     card.append(
@@ -424,7 +509,7 @@ function walletCard(): HTMLElement {
             onchange: (e: Event) => {
               remember = (e.target as HTMLInputElement).checked;
               save(K.remember, remember);
-              save(K.credential, remember ? credential : undefined);
+              persistKeys();
             },
           }),
           "Remember on this device",
@@ -440,6 +525,12 @@ function walletCard(): HTMLElement {
     card.append(
       h("p", { class: "muted" }, "No funds yet. Pay a Lightning invoice or paste a Cashu token; the node gives you an sk- key that holds the balance."),
     );
+    const others = Object.keys(nodeKeys).filter((n) => n !== settings.node);
+    if (others.length) {
+      card.append(
+        h("p", { class: "muted" }, `No key for this node. Keys for other nodes (${others.map(hostOf).join(", ")}) stay with those nodes and are never sent here.`),
+      );
+    }
   }
   card.append(
     h(
@@ -448,7 +539,7 @@ function walletCard(): HTMLElement {
       h("input", { id: "ln-amount", type: "number", min: 1, value: "500", "aria-label": "Amount in sats" }),
       h("button", { type: "button", onclick: onLightning }, "Lightning"),
     ),
-    h("div", { id: "invoice" }),
+    h("div", { id: "invoice" }, ...invoiceBoxes()),
     h("p", { class: "muted" }, "Lightning: your wallet may add a routing fee on top of the invoice amount."),
     h(
       "details",
@@ -474,7 +565,7 @@ function walletCard(): HTMLElement {
         h("summary", {}, "Withdraw (refund)"),
         h("p", { class: "muted" }, "Returns the whole balance as a Cashu token (or to a Lightning address) and empties the key. The mint's input fee or the Lightning routing fee comes out of the amount."),
         h("input", { id: "refund-ln", placeholder: "Lightning address (optional)" }),
-        h("button", { type: "button", onclick: onRefund }, "Withdraw"),
+        h("button", { type: "button", id: "refund-btn", onclick: onRefund }, "Withdraw"),
         h("div", { id: "refund-out" }),
       ),
     );
@@ -838,6 +929,8 @@ function openHowDialog(): void {
 
 // ─── header, models, estimate ───────────────────────────────────────────────
 
+const PREWARM_LABEL: Record<string, string> = { "waiting-funds": "needs funds", metered: "off (metered)" };
+
 function renderStatus(): void {
   const op = document.getElementById("offer-pill");
   if (op) {
@@ -848,7 +941,8 @@ function renderStatus(): void {
   const wp = document.getElementById("warm-pill");
   if (wp) {
     wp.className = `pill ${prewarmStatus === "armed" ? "ok" : prewarmStatus === "arming" ? "warn" : ""}`;
-    wp.textContent = `pre-warm: ${prewarmStatus}`;
+    wp.textContent = `pre-warm: ${PREWARM_LABEL[prewarmStatus] ?? prewarmStatus}`;
+    wp.title = prewarmStatus === "metered" ? "Pre-warm is off on a metered connection (Save-Data or cellular)" : "Pre-warmed session";
   }
 }
 
@@ -906,6 +1000,14 @@ function renderEstimate(): void {
     (p.abandonFeeMsat ? ` · unused prepared session ${formatSats(p.abandonFeeMsat)}` : "") +
     (p.sessionFeeMsat ? ` · incl. session fee ${formatSats(p.sessionFeeMsat)}` : "") +
     (p.rateSurchargePct ? ` · rates incl. ${p.rateSurchargePct}% surcharge` : "");
+  el.classList.remove("too-large");
+  const size = attachments.length || turns.some((t) => t.images?.length) ? roughBodyBytes() : 0;
+  if (size > BODY_LIMIT) {
+    el.textContent = tooLargeText(size);
+    el.classList.add("too-large");
+  } else if (size > BODY_LIMIT * 0.6) {
+    el.textContent += ` · this chat uses ${(size / MIB).toFixed(1)} of the ~${BODY_LIMIT / MIB} MiB a request holds (images are re-sent every message)`;
+  }
 }
 
 function onModelChange(): void {
@@ -930,8 +1032,13 @@ async function refreshBalance(): Promise<void> {
     return;
   }
   const had = balance !== undefined;
+  const key = credential;
+  const nodeApi = api;
   try {
-    balance = await api.balance(credential);
+    const b = await nodeApi.balance(key);
+    // The key or the node changed meanwhile: this answer is for another one.
+    if (key !== credential || nodeApi !== api) return;
+    balance = b;
   } catch (e) {
     logEvent({ ev: "balance_error", msg: String(e) });
   }
@@ -943,6 +1050,14 @@ async function refreshBalance(): Promise<void> {
   } else renderSide();
 }
 
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 /** What to tell the user about a new funded key: copy it, and whether it is stored. */
 function fundedKeyNotice(what: string): string {
   return remember
@@ -950,15 +1065,27 @@ function fundedKeyNotice(what: string): string {
     : `${what} Copy your key (Wallet → Your key): it is kept only in this tab unless you tick "Remember on this device".`;
 }
 
+/** Use `key` for the current node (kept per node; stored only when "remember" is on). */
 function setCredential(key: string | undefined): void {
   credential = key;
   balance = undefined;
-  save(K.credential, remember && key ? key : undefined);
+  if (key) nodeKeys[activeNode] = key;
+  else delete nodeKeys[activeNode];
+  persistKeys();
   client?.setCredential(key);
   void refreshBalance().then(() => {
     const p = currentModel();
     if (p) client?.prepare(p.id, maxTokens());
   });
+}
+
+/** Adopt `key` as the key for `node` (the current node or another one). */
+function adoptKey(node: string, key: string): void {
+  if (node === activeNode) setCredential(key);
+  else {
+    nodeKeys[node] = key;
+    persistKeys();
+  }
 }
 
 async function copy(text: string, msg: string): Promise<void> {
@@ -970,66 +1097,229 @@ async function copy(text: string, msg: string): Promise<void> {
   }
 }
 
-let invoicePoll: ReturnType<typeof setInterval> | undefined;
-async function onLightning(): Promise<void> {
-  const amount = Math.trunc(Number($<HTMLInputElement>("ln-amount").value));
-  if (!(amount > 0)) return toast("Enter an amount in sats");
-  const box = $("invoice");
-  box.replaceChildren(h("p", { class: "muted" }, "Creating invoice…"));
+/**
+ * Wallet operations in flight (Cashu redeem, invoice creation, withdraw):
+ * an automatic update reload waits for them, since their answer (a new key,
+ * a withdrawn token) would otherwise be lost.
+ */
+let walletOps = 0;
+async function walletOp<T>(f: () => Promise<T>): Promise<T> {
+  walletOps++;
   try {
-    const inv = await api.lightningInvoice(amount, credential?.startsWith("sk-") ? credential : undefined);
+    return await f();
+  } finally {
+    walletOps--;
+    idle();
+  }
+}
+
+// Lightning invoices: each one is polled on its own, bound to the node it was
+// created at, and kept in sessionStorage so that a reload of this tab still
+// collects a payment. A paid invoice whose key differs from the key in use is
+// shown with a choice; it never replaces the current key silently.
+
+interface PendingInvoice {
+  id: string;
+  node: string;
+  bolt11: string;
+  amountSats: number;
+  /** Unix seconds. */
+  expiresAt: number;
+  created: number;
+  /** Created as a top-up of the key then in use (otherwise it creates a new key). */
+  topup: boolean;
+}
+const MAX_INVOICES = 5;
+const INVOICE_POLL_MS = 3000;
+let invoices: PendingInvoice[] = sload<unknown[]>(SK.invoices, []).filter(
+  (i): i is PendingInvoice =>
+    !!i && typeof i === "object" && typeof (i as PendingInvoice).id === "string" && typeof (i as PendingInvoice).node === "string" &&
+    typeof (i as PendingInvoice).bolt11 === "string" && typeof (i as PendingInvoice).amountSats === "number" &&
+    typeof (i as PendingInvoice).expiresAt === "number" && typeof (i as PendingInvoice).created === "number",
+);
+const invoicePolls = new Map<string, ReturnType<typeof setInterval>>();
+
+function saveInvoices(): void {
+  ssave(SK.invoices, invoices.length ? invoices : undefined);
+}
+
+function invoiceBoxes(): HTMLElement[] {
+  return invoices.map((inv) => {
     const qr = qrcode(0, "L");
     qr.addData(inv.bolt11.toUpperCase(), "Alphanumeric");
     qr.make();
-    box.replaceChildren(
+    return h(
+      "div",
+      { class: "invoice" },
       h("div", { class: "qr" }, h("img", { src: qr.createDataURL(6, 2), alt: "Lightning invoice QR code" })),
       h("div", { class: "row" }, h("a", { href: `lightning:${inv.bolt11}` }, "Open in wallet"), h("button", { type: "button", onclick: () => copy(inv.bolt11, "Invoice copied") }, "Copy invoice")),
-      h("p", { class: "muted", id: "inv-status" }, `${amount} sat · waiting for payment…`),
+      h(
+        "p",
+        { class: "muted" },
+        `${inv.amountSats} sat${inv.topup ? " top-up" : ", new key"}${inv.node !== activeNode ? ` at ${hostOf(inv.node)}` : ""} · waiting for payment…`,
+      ),
     );
-    if (invoicePoll) clearInterval(invoicePoll);
-    const started = Date.now();
-    invoicePoll = setInterval(async () => {
-      if (Date.now() > inv.expires_at * 1000 || Date.now() - started > 3_600_000) {
-        clearInterval(invoicePoll);
-        $("inv-status").textContent = "Invoice expired";
-        return;
+  });
+}
+
+function renderInvoices(): void {
+  document.getElementById("invoice")?.replaceChildren(...invoiceBoxes());
+}
+
+function endInvoice(id: string): void {
+  const t = invoicePolls.get(id);
+  if (t) clearInterval(t);
+  invoicePolls.delete(id);
+  invoices = invoices.filter((i) => i.id !== id);
+  saveInvoices();
+  renderInvoices();
+}
+
+function watchInvoice(inv: PendingInvoice): void {
+  if (invoicePolls.has(inv.id)) return;
+  const nodeApi = new NodeApi(inv.node);
+  let inFlight = false;
+  const poll = async () => {
+    if (inFlight || !invoicePolls.has(inv.id)) return;
+    if (Date.now() > inv.expiresAt * 1000 || Date.now() - inv.created > 3_600_000) {
+      endInvoice(inv.id);
+      toast(`The Lightning invoice for ${inv.amountSats} sat expired`);
+      return;
+    }
+    inFlight = true;
+    try {
+      const st = await nodeApi.lightningStatus(inv.id);
+      if (!invoicePolls.has(inv.id)) return;
+      if (st.status === "paid") {
+        endInvoice(inv.id);
+        receiveKey(inv.node, st.api_key ?? undefined, st.amount_sats ?? inv.amountSats);
+      } else if (st.status === "expired") {
+        endInvoice(inv.id);
+        toast(`The Lightning invoice for ${inv.amountSats} sat expired`);
       }
-      try {
-        const st = await api.lightningStatus(inv.invoice_id);
-        if (st.status === "paid") {
-          clearInterval(invoicePoll);
-          box.replaceChildren(h("p", { class: "check" }, `Paid ${st.amount_sats} sat`));
-          if (st.api_key && st.api_key !== credential) {
-            setCredential(st.api_key);
-            toast(fundedKeyNotice("Funded."), 10000);
-          } else void refreshBalance();
-        } else if (st.status === "expired") {
-          clearInterval(invoicePoll);
-          $("inv-status").textContent = "Invoice expired";
-        }
-      } catch {
-        /* keep polling */
-      }
-    }, 3000);
+    } catch {
+      /* keep polling */
+    } finally {
+      inFlight = false;
+    }
+  };
+  invoicePolls.set(inv.id, setInterval(() => void poll(), INVOICE_POLL_MS));
+}
+
+/** A paid invoice's key: the current one is topped up; a different one is offered, never swapped in. */
+function receiveKey(node: string, key: string | undefined, amountSats: number): void {
+  const current = nodeKeys[node];
+  if (!key || key === current) {
+    toast(`Paid ${amountSats} sat`);
+    if (node === activeNode) void refreshBalance();
+    return;
+  }
+  if (!current) {
+    adoptKey(node, key);
+    toast(fundedKeyNotice(`Paid ${amountSats} sat${node !== activeNode ? ` at ${hostOf(node)}` : ""}.`), 10000);
+    if (node !== activeNode) renderSide();
+    return;
+  }
+  keyOffers.push({ node, key, amountSats });
+  renderKeyOffers();
+  toast(`A paid invoice (${amountSats} sat) gave a different key than the one in use: choose in Wallet`, 10000);
+}
+
+function keyOfferBoxes(): HTMLElement[] {
+  return keyOffers.map((o) => {
+    const drop = () => {
+      keyOffers = keyOffers.filter((x) => x !== o);
+      renderKeyOffers();
+    };
+    return h(
+      "div",
+      { class: "warnbox" },
+      h(
+        "p",
+        {},
+        `A paid Lightning invoice (${o.amountSats} sat${o.node !== activeNode ? ` at ${hostOf(o.node)}` : ""}) gave a new key, not the key in use. `,
+        "Switching replaces the current key in this tab: copy the current key first if it still holds funds. Dismissing forgets the new key, so copy it first.",
+      ),
+      h("div", { class: "row" }, h("code", {}, short(o.key, 8))),
+      h(
+        "div",
+        { class: "row" },
+        h("button", { type: "button", onclick: () => copy(o.key, "New key copied") }, "Copy new key"),
+        h(
+          "button",
+          {
+            type: "button",
+            onclick: () => {
+              drop();
+              adoptKey(o.node, o.key);
+              toast(fundedKeyNotice("Switched to the new key."), 10000);
+            },
+          },
+          "Use the new key",
+        ),
+        h("button", { type: "button", class: "secondary", onclick: drop }, "Keep the current key"),
+      ),
+    );
+  });
+}
+
+function renderKeyOffers(): void {
+  document.getElementById("key-offers")?.replaceChildren(...keyOfferBoxes());
+}
+
+async function onLightning(): Promise<void> {
+  const amount = Math.trunc(Number($<HTMLInputElement>("ln-amount").value));
+  if (!(amount > 0)) return toast("Enter an amount in sats");
+  if (invoices.length >= MAX_INVOICES) return toast(`${MAX_INVOICES} invoices are already waiting for payment`);
+  const node = activeNode;
+  const nodeApi = api;
+  const key = credential?.startsWith("sk-") ? credential : undefined;
+  try {
+    const inv = await walletOp(() => nodeApi.lightningInvoice(amount, key));
+    const pending: PendingInvoice = {
+      id: inv.invoice_id,
+      node,
+      bolt11: inv.bolt11,
+      amountSats: amount,
+      expiresAt: inv.expires_at,
+      created: Date.now(),
+      topup: key !== undefined,
+    };
+    invoices.push(pending);
+    saveInvoices();
+    renderInvoices();
+    watchInvoice(pending);
   } catch (e) {
-    box.replaceChildren(h("p", { class: "cross" }, String(e instanceof Error ? e.message : e)));
+    toast(`Invoice failed: ${e instanceof Error ? e.message : e}`, 8000);
   }
 }
 
 async function onCashu(): Promise<void> {
   const token = $<HTMLTextAreaElement>("cashu").value.trim();
   if (!token.startsWith("cashu")) return toast("Paste a Cashu token (cashuA… / cashuB…)");
+  const key = credential;
+  const nodeApi = api;
+  const node = activeNode;
   try {
-    if (credential?.startsWith("sk-")) {
-      await api.topupCashu(credential, token);
-      toast("Topped up");
-      void refreshBalance();
-    } else {
-      const r = await api.createKeyFromCashu(token);
-      setCredential(r.api_key);
-      toast(fundedKeyNotice("Key created."), 10000);
-    }
-    $<HTMLTextAreaElement>("cashu").value = "";
+    await walletOp(async () => {
+      if (key?.startsWith("sk-")) {
+        await nodeApi.topupCashu(key, token);
+        toast("Topped up");
+        if (node === activeNode) void refreshBalance();
+      } else {
+        const r = await nodeApi.createKeyFromCashu(token);
+        if (nodeKeys[node] && nodeKeys[node] !== r.api_key) {
+          // Another key arrived meanwhile: offer this one, do not swap it in.
+          keyOffers.push({ node, key: r.api_key, amountSats: Math.floor((r.balance ?? 0) / 1000) });
+          renderKeyOffers();
+        } else {
+          adoptKey(node, r.api_key);
+          toast(fundedKeyNotice("Key created."), 10000);
+        }
+      }
+    });
+    const ta = document.getElementById("cashu") as HTMLTextAreaElement | null;
+    if (ta) ta.value = "";
   } catch (e) {
     toast(`Cashu failed: ${e instanceof Error ? e.message : e}`, 8000);
   }
@@ -1041,28 +1331,118 @@ function onPasteKey(): void {
   setCredential(k);
 }
 
+function refundTokenBox(): HTMLElement[] {
+  if (!refundToken) return [];
+  const token = refundToken;
+  return [
+    h(
+      "div",
+      { class: "warnbox" },
+      h("p", { class: "check" }, "Withdrawn as a Cashu token. Redeem it in any Cashu wallet; it exists only here until you do:"),
+      h("textarea", { rows: 4, readOnly: true, value: token }),
+      h(
+        "div",
+        { class: "row" },
+        h("button", { type: "button", onclick: () => copy(token, "Token copied") }, "Copy token"),
+        h(
+          "button",
+          {
+            type: "button",
+            class: "secondary",
+            onclick: () => {
+              refundToken = undefined;
+              document.getElementById("refund-token")?.replaceChildren();
+            },
+          },
+          "I saved it",
+        ),
+      ),
+    ),
+  ];
+}
+
+/** Longest wait for the node to release a pre-warmed session's reservation before a withdraw. */
+const REFUND_WAIT_MS = 30_000;
+
 async function onRefund(): Promise<void> {
   if (!credential) return;
+  if (busy) return toast("Wait for the current request to finish");
+  if (walletOps) return toast("Wait for the current wallet operation to finish");
   if (!confirm("Withdraw the whole balance and empty this key?")) return;
   const ln = $<HTMLInputElement>("refund-ln").value.trim() || undefined;
+  const key = credential;
+  const nodeApi = api;
+  const status = (text: string, cls = "muted") => document.getElementById("refund-out")?.replaceChildren(h("p", { class: cls }, text));
+  const btn = document.getElementById("refund-btn") as HTMLButtonElement | null;
+  if (btn) btn.disabled = true;
+  // The node refuses a refund while a reservation is open: stop pre-warming
+  // (which closes the armed session) and wait until it is released.
+  client?.setPrewarm(false);
   client?.prewarmer?.teardown("refund");
   try {
-    const r = await api.refund(credential, ln);
-    const out = $("refund-out");
-    if (typeof r.token === "string") {
-      out.replaceChildren(
-        h("p", { class: "check" }, "Withdrawn as a Cashu token. Redeem it in any Cashu wallet:"),
-        h("textarea", { rows: 4, readOnly: true, value: r.token }),
-        h("button", { type: "button", onclick: () => copy(r.token as string, "Token copied") }, "Copy token"),
-      );
-    } else out.replaceChildren(h("p", { class: "check" }, "Withdrawal sent."), h("pre", {}, JSON.stringify(r, null, 2)));
-    void refreshBalance();
+    await walletOp(async () => {
+      const until = Date.now() + REFUND_WAIT_MS;
+      for (;;) {
+        const b = await nodeApi.balance(key);
+        if (b.reserved === 0) break;
+        if (Date.now() > until) {
+          throw new Error(`the node still holds ${formatSats(b.reserved)} for an open session (another tab or device?). Try again in a minute`);
+        }
+        status(`Waiting for the node to release ${formatSats(b.reserved)} held by an open session…`);
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      status("Withdrawing…");
+      const r = await nodeApi.refund(key, ln);
+      if (typeof r.token === "string") {
+        refundToken = r.token;
+        document.getElementById("refund-token")?.replaceChildren(...refundTokenBox());
+        status("Withdrawn: the token is at the top of the wallet.", "check");
+      } else {
+        document.getElementById("refund-out")?.replaceChildren(h("p", { class: "check" }, "Withdrawal sent."), h("pre", {}, JSON.stringify(r, null, 2)));
+      }
+    });
+    if (key === credential) void refreshBalance();
   } catch (e) {
+    status(`Refund failed: ${e instanceof Error ? e.message : e}`, "cross");
     toast(`Refund failed: ${e instanceof Error ? e.message : e}`, 8000);
+  } finally {
+    if (btn) btn.disabled = false;
+    client?.setPrewarm(prewarmOn);
   }
 }
 
 // ─── chat ───────────────────────────────────────────────────────────────────
+
+/** The messages sent for these turns. An empty answer (cut off while reasoning) is not sent back. */
+function chatHistory(list: Pick<Turn, "role" | "content" | "images" | "error">[]): { role: string; content: unknown }[] {
+  return list
+    .filter((t) => !t.error && (t.content || t.images?.length))
+    .map((t) => ({ role: t.role, content: t.images?.length ? imageContent(t.content, t.images) : t.content }));
+}
+
+/**
+ * Largest request body this app sends: the relay's limit is 8 MiB, and the
+ * pinned suffix and the padding to a length bucket need some room.
+ */
+const BODY_LIMIT = 7.5 * 1024 * 1024;
+const MIB = 1024 * 1024;
+
+function bodyBytes(body: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(body)).length;
+}
+
+/** A quick estimate of the next request body (for the hint under the model; the send check is exact). */
+function roughBodyBytes(): number {
+  const prompt = (document.getElementById("prompt") as HTMLTextAreaElement | null)?.value ?? "";
+  let n = 512 + prompt.length * 1.1;
+  for (const t of turns) n += 64 + t.content.length * 1.1 + (t.images ?? []).reduce((a, u) => a + u.length + 64, 0);
+  for (const u of attachments) n += u.length + 64;
+  return n;
+}
+
+function tooLargeText(bytes: number): string {
+  return `This chat is too large to send (${(bytes / MIB).toFixed(1)} MiB; a request holds about ${BODY_LIMIT / MIB} MiB). Images from earlier messages are sent again with every message: remove an attached image, or start a new chat ("New chat").`;
+}
 
 /** `reasoning_effort` when one is chosen (sent inside the encrypted body; the node never sees it). */
 function reasoningParam(): { reasoning_effort?: string } {
@@ -1128,14 +1508,25 @@ async function onSend(e: Event): Promise<void> {
   if (!credential) return toast("Fund the wallet first (Lightning or Cashu)");
   const withImages = attachments.length > 0 || turns.some((t) => t.images?.length);
   if (withImages && !acceptsImages(p.id)) return toast(`${p.name ?? p.id} does not accept images: pick a vision model, or start a new chat`);
+  // The relay takes at most 8 MiB per request, and every earlier image is sent
+  // again: refuse here, with what to do, rather than fail at the relay.
+  const size = bodyBytes({
+    messages: chatHistory([...turns, { role: "user", content: text, images: attachments.length ? attachments : undefined }]),
+    model: p.id,
+    max_tokens: maxTokens(),
+    ...reasoningParam(),
+    stream: true,
+  });
+  if (size > BODY_LIMIT) {
+    renderEstimate();
+    return toast(tooLargeText(size), 15000);
+  }
   ta.value = "";
   addTurn("user", text, attachments.length ? attachments : undefined);
   attachments = [];
   renderAttachments();
   // An empty answer (cut off while reasoning) is not sent back as history.
-  const history = turns
-    .filter((t) => !t.error && (t.content || t.images?.length))
-    .map((t) => ({ role: t.role, content: t.images?.length ? imageContent(t.content, t.images) : t.content }));
+  const history = chatHistory(turns);
   const answer = addTurn("assistant", "");
   const body = h("div", { class: "md" }, "");
   const view = streamingMarkdown(body);
@@ -1151,8 +1542,9 @@ async function onSend(e: Event): Promise<void> {
   busy = true;
   $<HTMLButtonElement>("send").disabled = true;
   const t0 = performance.now();
+  let stream: ConfidentialStream | undefined;
   try {
-    const stream = await client.chat.completions.create({
+    stream = await client.chat.completions.create({
       model: p.id,
       messages: history,
       max_tokens: maxTokens(),
@@ -1222,6 +1614,22 @@ async function onSend(e: Event): Promise<void> {
     );
     selectTurn(answer);
   } catch (err) {
+    // Stopped after the request reached the provider: the session still
+    // settles, and its receipt says what was charged.
+    if (stream && err instanceof Error && err.name === "AbortError") {
+      const r = await stream.verification.catch(() => undefined);
+      if (r) {
+        answer.result = r;
+        answer.error = "stopped";
+        meta.replaceChildren(
+          h("span", { class: "cross" }, "stopped"),
+          h("span", {}, `charged ${formatSats(r.costMsats ?? 0)} (receipt ${r.receiptSigOk ? "verified" : "not verified"})`),
+          h("button", { type: "button", onclick: () => showDetails(answer) }, "details"),
+        );
+        selectTurn(answer);
+        return;
+      }
+    }
     const msg = friendlyError(err);
     answer.error = msg;
     testHook().errors.push(msg);
@@ -1332,7 +1740,7 @@ function renderAttachments(): void {
         h("button", { type: "button", title: "Remove", "aria-label": "Remove image", onclick: () => { attachments.splice(i, 1); renderAttachments(); } }, "×"),
       ),
     ),
-    h("span", { class: "muted" }, "Encrypted to the provider, billed as input tokens, and re-sent with every later message in this chat."),
+    h("span", { class: "muted" }, `Encrypted to the provider, billed as input tokens, and re-sent with every later message in this chat. A request holds about ${BODY_LIMIT / MIB} MiB; when a chat with images reaches that, start a new chat.`),
   );
   renderEstimate();
 }
@@ -1378,8 +1786,20 @@ const SETUP_MB_PER_IMAGE = 26;
 let galleryLoaded = false;
 let imageBodySent = false;
 
+/** The parsed image block of the current offer (a malformed block means: no images; chat is unaffected). */
+let imagesParsed: { offer: VerifiedOffer; images?: ConfidentialImagesOffer; error?: string } | undefined;
+
 function imagesOffer(): ConfidentialImagesOffer | undefined {
-  return offer ? offerImages(offer) : undefined;
+  if (!offer) return undefined;
+  if (imagesParsed?.offer !== offer) {
+    try {
+      imagesParsed = { offer, images: offerImages(offer) };
+    } catch (e) {
+      imagesParsed = { offer, error: e instanceof Error ? e.message : String(e) };
+      logEvent({ ev: "images_offer_refused", msg: imagesParsed.error });
+    }
+  }
+  return imagesParsed.images;
 }
 
 function imageControls(): Child[] {
@@ -1469,7 +1889,11 @@ function renderImageEstimate(): void {
   const el = document.getElementById("img-estimate");
   if (!el) return;
   if (!imagesOffer()) {
-    el.textContent = offer ? "This node does not offer confidential image generation." : "";
+    el.textContent = !offer
+      ? ""
+      : imagesParsed?.error
+        ? "This node's image offer is malformed, so image generation is off (chat works)."
+        : "This node does not offer confidential image generation.";
     return;
   }
   const c = imageChoice();
@@ -1715,6 +2139,22 @@ function onSaveSettings(): void {
 }
 
 async function restart(): Promise<void> {
+  // A key belongs to the node that issued it: a new node URL gets its own
+  // key (or none), never the previous node's.
+  if (settings.node !== activeNode) {
+    const had = credential !== undefined;
+    activeNode = settings.node;
+    credential = nodeKeys[activeNode];
+    balance = undefined;
+    if (had) {
+      toast(
+        credential
+          ? `Using the key kept for ${hostOf(activeNode)}.`
+          : `No key for ${hostOf(activeNode)} yet: your other key stays with its node and is not sent here.`,
+        8000,
+      );
+    }
+  }
   offer = undefined;
   offerError = undefined;
   pricing = [];
@@ -1745,14 +2185,16 @@ async function restart(): Promise<void> {
 }
 
 window.addEventListener("beforeunload", (e) => {
-  if (credential && !remember && balance && balance.balance > 0) {
-    e.preventDefault();
-  }
+  // An automatic update reload has stashed everything below for this tab.
+  if (autoReloading) return;
+  const fundedKeyOnlyHere = credential && !remember && balance && balance.balance > 0;
+  if (fundedKeyOnlyHere || refundToken || keyOffers.length || invoices.length) e.preventDefault();
 });
 
 testHook();
 layout();
 renderSide();
-setupPwa({ isBusy: () => busy, toast });
+for (const inv of invoices) watchInvoice(inv);
+setupPwa({ isBusy: () => busy || walletOps > 0, toast, beforeReload: stashForReload });
 void restart();
 setInterval(() => void refreshBalance(), 60_000);

@@ -35,11 +35,18 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.endsWith("/version.json") || url.pathname.endsWith("/sw.js")) return;
   if (req.mode === "navigate") {
     // Network first so a new release is seen at once; cached shell offline.
+    // Only a good answer for the app shell itself (the scope URL or its
+    // index.html, any query) replaces the cached shell: an error page or a
+    // navigation to another file must not become the offline app.
+    const scope = new URL(self.registration.scope);
+    const isShell = url.pathname === scope.pathname || url.pathname === `${scope.pathname}index.html`;
     event.respondWith(
       fetch(req)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put("./", copy));
+          if (isShell && res.ok && res.type === "basic" && !res.redirected) {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put("./", copy));
+          }
           return res;
         })
         .catch(() => caches.match("./").then((r) => r || Response.error())),
