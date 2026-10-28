@@ -55,6 +55,12 @@ Worker. That README explains how a request works and the security model.
   prompt, model and receipt**, so the gallery survives a reload. That copy of
   the prompt is local and unencrypted; delete images from the gallery (or
   clear the site's data) to remove it.
+- **Image input** for vision models (the node's model list says which; the
+  **Image** button, or paste an image). The image is downscaled to at most
+  1568 px, re-encoded as JPEG and sent as a data URI inside the encrypted
+  request, so the node never sees it and no image host is contacted. The
+  provider bills it as input tokens, which the receipt shows; it is re-sent
+  (and billed again) with every later message in the same chat.
 - **Pre-warming.** After your first message with a funded key, one session
   is kept armed (2PC done) while the page is visible and you are active, so
   the next answers come fast. The first message runs cold. It never arms without a balance. It does not arm if the node's

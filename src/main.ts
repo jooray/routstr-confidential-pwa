@@ -158,6 +158,8 @@ function toast(msg: string, ms = 4000): void {
 interface Turn {
   role: "user" | "assistant";
   content: string;
+  /** Attached images (data URIs), sent with this turn on every later request. */
+  images?: string[];
   el: HTMLElement;
   result?: ConfidentialSessionResult;
   error?: string;
@@ -173,6 +175,10 @@ let balance: BalanceInfo | undefined;
 let busy = false;
 let selected: Turn | undefined;
 const turns: Turn[] = [];
+/** Images attached to the next message (data URIs, prepared by prepareImage). */
+let attachments: string[] = [];
+/** Models whose node entry lists image input; undefined while unknown (then any model may try). */
+let visionModels: Set<string> | undefined;
 const events: string[] = [];
 let prewarmStatus = "off";
 /** Chat, or confidential image generation (on demand only, never pre-armed). */
@@ -285,9 +291,27 @@ function layout(): void {
           ),
           h("div", { class: "messages", id: "messages" }, emptyState()),
           h("div", { class: "messages gallery", id: "gallery" }),
+          h("div", { class: "attachments", id: "attachments", hidden: true }),
           h(
             "form",
             { class: "composer", onsubmit: onSend },
+            h("input", {
+              type: "file",
+              id: "attach-input",
+              accept: "image/png,image/jpeg,image/webp,image/gif",
+              multiple: true,
+              hidden: true,
+              onchange: (e: Event) => {
+                const input = e.target as HTMLInputElement;
+                void addAttachments([...(input.files ?? [])]);
+                input.value = "";
+              },
+            }),
+            h(
+              "button",
+              { type: "button", id: "attach", class: "secondary", title: "Attach an image (models that accept image input)", onclick: () => $("attach-input").click() },
+              "Image",
+            ),
             h("textarea", {
               id: "prompt",
               rows: 2,
@@ -299,6 +323,13 @@ function layout(): void {
               },
               onfocus: () => {
                 if (mode === "chat") client?.activity();
+              },
+              onpaste: (e: ClipboardEvent) => {
+                if (mode !== "chat") return;
+                const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+                if (!files.length) return;
+                e.preventDefault();
+                void addAttachments(files);
               },
               onkeydown: (e: KeyboardEvent) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -829,6 +860,7 @@ function renderModels(): void {
   const want = [saved, DEFAULT_MODEL].find((id) => id && pricing.some((p) => p.id === id)) ?? pricing[0]?.id ?? "";
   renderModelOptions(want);
   renderEstimate();
+  renderAttach();
 }
 
 /** The model picker's items, by name, with their rates. */
@@ -859,7 +891,8 @@ function renderEstimate(): void {
   const el = document.getElementById("estimate");
   if (!el || !p) return;
   const prompt = ($<HTMLTextAreaElement>("prompt")?.value ?? "") + turns.map((t) => t.content).join("");
-  const inTok = roughTokens(prompt) + 20;
+  const images = attachments.length + turns.reduce((n, t) => n + (t.images?.length ?? 0), 0);
+  const inTok = roughTokens(prompt) + 20 + images * IMAGE_TOKENS_GUESS;
   const mt = maxTokens();
   const typical = costMsat(p.rates, { prompt_tokens: inTok, completion_tokens: Math.min(mt, 300) }, p.sessionFeeMsat);
   const worst = costMsat(p.rates, { prompt_tokens: inTok, completion_tokens: mt }, p.sessionFeeMsat);
@@ -878,6 +911,7 @@ function renderEstimate(): void {
 function onModelChange(): void {
   const p = currentModel();
   if (!p) return;
+  renderAttach();
   save(K.model, p.id);
   save(K.maxTokens, maxTokens());
   client?.prepare(p.id, maxTokens());
@@ -1039,21 +1073,24 @@ function reasoningParam(): { reasoning_effort?: string } {
 function clearChat(): void {
   if (busy) return toast("Wait for the current answer to finish");
   turns.length = 0;
+  attachments = [];
+  renderAttachments();
   selected = undefined;
   $("messages").replaceChildren(emptyState());
   renderSide();
   renderEstimate();
 }
 
-function addTurn(role: Turn["role"], content: string): Turn {
+function addTurn(role: Turn["role"], content: string, images?: string[]): Turn {
   document.getElementById("empty")?.remove();
   const el = h("div", { class: `msg ${role}` }, role === "assistant" ? "" : content);
+  if (images?.length) el.prepend(h("div", { class: "msg-images" }, ...images.map((src) => h("img", { src, alt: "attached image" }))));
   if (role === "assistant" && content) {
     const body = h("div", { class: "md" }, "");
     body.innerHTML = renderMarkdown(content);
     el.append(body);
   }
-  const t: Turn = { role, content, el };
+  const t: Turn = { role, content, el, images };
   $("messages").append(el);
   turns.push(t);
   el.scrollIntoView({ block: "end" });
@@ -1085,14 +1122,20 @@ async function onSend(e: Event): Promise<void> {
   if (busy || !client) return;
   const ta = $<HTMLTextAreaElement>("prompt");
   const text = ta.value.trim();
-  if (!text) return;
+  if (!text && !attachments.length) return;
   const p = currentModel();
   if (!p) return toast("No confidential model available");
   if (!credential) return toast("Fund the wallet first (Lightning or Cashu)");
+  const withImages = attachments.length > 0 || turns.some((t) => t.images?.length);
+  if (withImages && !acceptsImages(p.id)) return toast(`${p.name ?? p.id} does not accept images: pick a vision model, or start a new chat`);
   ta.value = "";
-  addTurn("user", text);
+  addTurn("user", text, attachments.length ? attachments : undefined);
+  attachments = [];
+  renderAttachments();
   // An empty answer (cut off while reasoning) is not sent back as history.
-  const history = turns.filter((t) => !t.error && t.content).map((t) => ({ role: t.role, content: t.content }));
+  const history = turns
+    .filter((t) => !t.error && (t.content || t.images?.length))
+    .map((t) => ({ role: t.role, content: t.images?.length ? imageContent(t.content, t.images) : t.content }));
   const answer = addTurn("assistant", "");
   const body = h("div", { class: "md" }, "");
   const view = streamingMarkdown(body);
@@ -1192,6 +1235,116 @@ async function onSend(e: Event): Promise<void> {
     void refreshBalance();
     idle();
   }
+}
+
+// ─── image input (chat) ─────────────────────────────────────────────────────
+//
+// An attached image travels in the private request body as a data URI image
+// part: the node relays it encrypted and never sees it, and the provider bills
+// it as prompt tokens, which the usage proof discloses and the node charges at
+// the signed input rate (the reservation already covers a full-context prompt).
+// A remote image URL would make the provider fetch it, telling the image host
+// about the request, so only local files are attached.
+
+/** Longest side sent; vision models downscale larger images anyway. */
+const IMAGE_MAX_SIDE = 1568;
+/** Providers refuse smaller images (Venice: at least 64x64). */
+const IMAGE_MIN_SIDE = 64;
+const IMAGE_MAX_COUNT = 4;
+/** A rough per-image prompt-token count for the estimate (a 1024 px image is a few hundred to ~1,500). */
+const IMAGE_TOKENS_GUESS = 800;
+
+function imageInputModels(models: { id: string; [k: string]: unknown }[]): Set<string> | undefined {
+  const out = new Set<string>();
+  let known = false;
+  for (const m of models) {
+    const mods = (m.architecture as { input_modalities?: unknown } | undefined)?.input_modalities;
+    if (!Array.isArray(mods)) continue;
+    known = true;
+    if (mods.includes("image")) out.add(m.id);
+  }
+  return known ? out : undefined;
+}
+
+function acceptsImages(model: string): boolean {
+  return !visionModels || visionModels.has(model);
+}
+
+function imageContent(text: string, images: string[]): unknown[] {
+  return [...(text ? [{ type: "text", text }] : []), ...images.map((url) => ({ type: "image_url", image_url: { url } }))];
+}
+
+/** Decode, downscale and re-encode as JPEG (accepted by every vision model), as a data URI. */
+async function prepareImage(file: File): Promise<string> {
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw new Error(`${file.name || "the image"} could not be decoded`);
+  }
+  try {
+    if (Math.min(bitmap.width, bitmap.height) < IMAGE_MIN_SIDE) {
+      throw new Error(`${file.name || "the image"} is ${bitmap.width}x${bitmap.height}; images must be at least ${IMAGE_MIN_SIDE}x${IMAGE_MIN_SIDE}`);
+    }
+    const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(IMAGE_MIN_SIDE, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(IMAGE_MIN_SIDE, Math.round(bitmap.height * scale));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("this browser cannot re-encode images");
+    ctx.fillStyle = "#fff"; // transparent PNGs: JPEG has no alpha
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.85);
+  } finally {
+    bitmap.close();
+  }
+}
+
+async function addAttachments(files: File[]): Promise<void> {
+  const p = currentModel();
+  if (p && !acceptsImages(p.id)) return toast(`${p.name ?? p.id} does not accept images: pick a vision model`);
+  for (const f of files) {
+    if (attachments.length >= IMAGE_MAX_COUNT) {
+      toast(`At most ${IMAGE_MAX_COUNT} images per message`);
+      break;
+    }
+    try {
+      attachments.push(await prepareImage(f));
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e));
+    }
+  }
+  renderAttachments();
+  client?.activity();
+}
+
+function renderAttachments(): void {
+  const strip = document.getElementById("attachments");
+  if (!strip) return;
+  strip.hidden = mode === "image" || !attachments.length;
+  strip.replaceChildren(
+    ...attachments.map((src, i) =>
+      h(
+        "div",
+        { class: "attachment" },
+        h("img", { src, alt: `attachment ${i + 1}` }),
+        h("button", { type: "button", title: "Remove", "aria-label": "Remove image", onclick: () => { attachments.splice(i, 1); renderAttachments(); } }, "×"),
+      ),
+    ),
+    h("span", { class: "muted" }, "Encrypted to the provider, billed as input tokens, and re-sent with every later message in this chat."),
+  );
+  renderEstimate();
+}
+
+/** The attach button: off for models the node lists as text-only. */
+function renderAttach(): void {
+  const b = document.getElementById("attach") as HTMLButtonElement | null;
+  const p = currentModel();
+  if (!b || !p) return;
+  const ok = acceptsImages(p.id);
+  b.disabled = !ok;
+  b.title = ok ? "Attach an image" : `${p.name ?? p.id} does not accept image input`;
 }
 
 function friendlyError(err: unknown): string {
@@ -1350,6 +1503,8 @@ function applyMode(): void {
     ? "Describe the image. The node relays it encrypted; it sees only the model, resolution and count it charges for."
     : "Ask something. The node relays it encrypted; only the provider and you can read it.";
   $("send").textContent = image ? "Generate" : "Send";
+  $("attach").hidden = image;
+  $("attachments").hidden = image || !attachments.length;
   if (image && !galleryLoaded) void loadGallery();
   if (image) renderImageEstimate();
 }
@@ -1569,6 +1724,10 @@ async function restart(): Promise<void> {
   try {
     offer = await client!.offer();
     pricing = await client!.pricing(maxTokens());
+    void client!.models().then((list) => {
+      visionModels = imageInputModels(list);
+      renderAttach();
+    }, () => undefined);
     renderModels();
     renderImageControls();
     void mintInputFees(offer.mints ?? []).then((f) => {
