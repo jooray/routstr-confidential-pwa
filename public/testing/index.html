@@ -145,7 +145,8 @@ own connection. None of this is merged into upstream Routstr yet, so every step 
 <h3>Get started</h3>
 <ol>
 <li>Open <a href="https://jooray.github.io/routstr-confidential-pwa/">jooray.github.io/routstr-confidential-pwa</a>.
-  The default node is <code>https://routstr.cypherpunk.today</code>. The header should say
+  The default node is <code>https://routstr.cypherpunk.today</code>, which runs protocol v3 since 2026-11-12
+  (HTTP/2 and HTTP/1.1, a connection deposit of 2 sats). The header should say
   <strong>offer verified</strong>: the app checked the node's signed price list against the node key it has pinned.</li>
 <li>Fund it in the <strong>Wallet</strong> panel. You have three options:
   <ul>
@@ -651,7 +652,8 @@ See "Upgrading from v2" in
 
 <!-- ─────────────────────────────────────────────────────────── -->
 <h2 id="branches">6. Branch map</h2>
-<p>Nothing here is merged upstream. The pull requests below are open against Routstr.</p>
+<p>Nothing here is merged upstream. The pull requests below are open against Routstr. routstr.cypherpunk.today
+runs the v3 branches below.</p>
 <div class="table-wrap"><table>
 <tr><th>Component</th><th>Repository</th><th>Branch</th></tr>
 <tr><td>protocol, sidecar, reference client, paper</td><td><a href="https://github.com/jooray/routstr-confidential">jooray/routstr-confidential</a></td><td><code>main</code> (v3); <code>v2</code> archived</td></tr>
