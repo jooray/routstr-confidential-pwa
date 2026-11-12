@@ -110,7 +110,11 @@ code is on forks, not in Routstr releases. Test with small amounts (a few hundre
   <li><a href="#dev-sdk">The SDK (Node and Bun)</a></li>
   </ol>
 </li>
-<li><a href="#node">Node operators</a></li>
+<li><a href="#node">Node operators</a>
+  <ol>
+  <li><a href="#providers">Providers</a></li>
+  </ol>
+</li>
 <li><a href="#branches">Branch map</a></li>
 <li><a href="#report">Reporting problems</a></li>
 </ol>
@@ -489,7 +493,7 @@ and verifies the client's proofs. Billing uses the node's normal reservation and
 
 <h3>What you need</h3>
 <ul>
-<li>An API key for an OpenAI-compatible provider that you are willing to sell. Only Venice has been tested.</li>
+<li>An API key for an OpenAI-compatible provider that you are willing to sell. Venice is the tested one; see <a href="#providers">Providers</a> for others.</li>
 <li>A server with a public HTTPS name and a reverse proxy that passes WebSockets.</li>
 <li>The node: <a href="https://github.com/jooray/routstr-core/tree/confidential-2pc">jooray/routstr-core</a>, branch <code>confidential-2pc</code>.</li>
 <li>The sidecar: <a href="https://github.com/jooray/routstr-confidential">jooray/routstr-confidential</a>, branch <code>main</code>. Build it with podman/docker or with Rust.</li>
@@ -649,6 +653,44 @@ Upgrading from v2: upgrade the sidecar and the node together. v2 clients then ge
 See "Upgrading from v2" in
 <a href="https://github.com/jooray/routstr-confidential/blob/main/docs/SETUP.md">docs/SETUP.md</a>.
 </p>
+
+<h3 id="providers">7. Providers</h3>
+<p>
+Which upstream providers work with protocol v3, measured on 2026-11-12 with free models only (Venice: the
+earlier reference measurement). Each provider got its own offer file and ran the HTTP/1.1 profile items
+(A1, A2, A4-A7, A9-A12; A3 is Venice-only, A8 and A13 were not run), the HTTP/2 items H1-H8 at the idle time
+in the table, the idle close of one silent HTTP/2 connection and whether a PING every 120 s holds it 15
+minutes. The profile check uses the client's exact TLS profile (TLS 1.3, one suite, P-256, a KeyUpdate after
+the head). Providers whose chat profile holds then ran end to end through our sidecar with the reference
+driver (<code>crypto/tools/v3-check.sh</code>: both framings, three requests on one connection, a request
+after 60 s idle, a 200 kB body, a decoy model, the model-swap attack). Results change when providers change
+their front ends: re-run before you rely on a row. Details, evidence and the image analysis for OpenRouter:
+<a href="https://github.com/jooray/routstr-confidential/blob/main/docs/PROVIDERS.md">docs/PROVIDERS.md</a>.
+</p>
+<div class="table-wrap"><table>
+<tr><th>Provider</th><th>Endpoint</th><th>HTTP/1.1 (profile)</th><th>HTTP/2 (H items)</th><th>Idle close (silent)</th><th>Keepalive holds 15 min</th><th>Recommended <code>idle_secs</code></th><th>Chat</th><th>Images</th><th>End-to-end chat (2 / 1.1)</th><th>Follow-up on kept connection</th><th>End-to-end image</th><th>Chat + image on one connection</th><th>Notes</th></tr>
+<tr><td>Venice (reference)</td><td><code>api.venice.ai/api/v1</code></td><td>✓ A1-A13</td><td>✓ H1-H8</td><td>400 s, GOAWAY</td><td>✓ PING or SETTINGS every 2-5 min</td><td>390</td><td>✓</td><td>✓ native <code>/image/generate</code></td><td>✓ / ✓</td><td>✓</td><td>✓</td><td>✓</td><td>the deployed provider</td></tr>
+<tr><td>Numes</td><td><code>api.numes.ai/api/v1</code></td><td>✓ (an unknown field is a 502, not ignored; <code>prediction</code> accepted)</td><td>✓ H1-H8 at 590 s</td><td>600 s, GOAWAY</td><td>✗ PINGs do not reset it; requests do</td><td>590</td><td>✓</td><td>? no image models</td><td>✓ / ✓</td><td>✓</td><td>?</td><td>?</td><td>free <code>moonshotai/kimi-k3.1-pro</code>; decoy neutralised, model swap refused</td></tr>
+<tr><td>xKiro</td><td><code>api.xkiro.com/v1</code></td><td>✓ except A4, A10: unknown and price fields accepted silently</td><td>✓ H1-H6, H8 at 390 s; H7 ? (no field error to read)</td><td>400 s, GOAWAY</td><td>✓</td><td>390</td><td>✓ (pin price fields on a paid account)</td><td>? no image models</td><td>✓ / ✓</td><td>✓</td><td>?</td><td>?</td><td>free <code>mistralai/ministral-3b</code>; decoy neutralised, model swap refused</td></tr>
+<tr><td>OpenRouter</td><td><code>openrouter.ai/api/v1</code></td><td>✗ A7: the usage event has a non-empty <code>choices</code>; comment lines; unknown fields accepted</td><td>✓ H1-H6, H8 at 390 s</td><td>400 s, GOAWAY</td><td>✓</td><td>390</td><td>✗ usage event refused at settlement</td><td>✗ images come through chat: not servable as it stands</td><td>✗ / ✗</td><td>✗</td><td>✗</td><td>✗</td><td>free tier 50 requests/day</td></tr>
+<tr><td>NVIDIA NIM</td><td><code>integrate.api.nvidia.com/v1</code></td><td>✗ A2: the first <code>model</code> key wins</td><td>✓ H1-H8 at 330 s</td><td>340 s, TCP close without GOAWAY</td><td>✓</td><td>330</td><td>✗ the model pin can be bypassed</td><td>? other host and route</td><td>✓ / ✓, ✗ decoy</td><td>✓</td><td>?</td><td>?</td><td>model binding broken</td></tr>
+<tr><td>Google AI Studio</td><td><code>generativelanguage.googleapis.com/v1beta/openai</code></td><td>✗ A7: usage merged into the last content chunk; one cap key only; thinking not counted</td><td>✗ H5, H8</td><td>240 s, GOAWAY</td><td>✗ PINGs do not reset it</td><td>230</td><td>✗</td><td>? no free image model</td><td>not run</td><td>?</td><td>?</td><td>?</td><td>this key has a <code>.</code>, outside the provable alphabet</td></tr>
+<tr><td>Cloudflare Workers AI</td><td><code>api.cloudflare.com/client/v4/accounts/&lt;account&gt;/ai/v1</code></td><td>✗ A7: usage on every chunk, <code>choices</code> not empty; unknown fields accepted</td><td>✓ H1-H6, H8 at 390 s</td><td>400 s, GOAWAY</td><td>✓</td><td>390</td><td>✗</td><td>? only <code>/ai/run/…</code></td><td>not run</td><td>?</td><td>?</td><td>?</td><td>the offer would publish the account id</td></tr>
+<tr><td>UnoRouter</td><td><code>api.unorouter.com/v1</code></td><td>✗ cap overrun (64 tokens at 20), duplicate keys refused, intermittent 403</td><td>✗ H8: the usage event is not always last</td><td>? not measured</td><td>?</td><td>?</td><td>✗</td><td>? image budget exhausted (429)</td><td>not run</td><td>?</td><td>?</td><td>?</td><td>free models: 1 request/min</td></tr>
+<tr><td>OpenCode Go</td><td><code>opencode.ai/zen/go/v1</code></td><td>✗ needs an <code>x-opencode-session</code> header the head template cannot carry</td><td>✗ no HTTP/2</td><td>–</td><td>–</td><td>–</td><td>✗</td><td>?</td><td>not run</td><td>?</td><td>?</td><td>?</td><td>with the header, the rest is like xKiro</td></tr>
+</table></div>
+<p class="note">
+End to end here means our sidecar and the reference driver (receipts signed by the sidecar). Through a
+routstr-core node none of these providers got a model into the confidential offer: the node offers a model only
+when its public id equals the id sent to the provider, and it drops the <code>org/</code> prefix these providers use.
+Images: no provider here has a free image model on a route the sidecar describes.
+</p>
+<p>To re-run for your provider (the key goes only to the offer's <code>upstream_host</code>):</p>
+<pre><code>T=crypto/tools/provider-profile-check.py
+python3 -I $T --offer my-offer.json --key-env MY_KEY --model &lt;model&gt;
+python3 -I $T --offer my-offer.json --key-env MY_KEY --model &lt;model&gt; --h2 --h2-no-images --h2-idle &lt;idle_secs&gt;
+CU_V3_OFFER=my-offer.json CU_KEY_ENV=MY_KEY CU_UPSTREAM=&lt;host&gt;:443 CU_TRUSTED_HOSTS=&lt;host&gt; CU_MODEL=&lt;model&gt; \
+  CU_SWAP_MODEL=&lt;other model&gt; CU_NO_IMAGES=1 CU_CASES="h2-one h11-one h2-three h2-decoy h11-decoy" crypto/tools/v3-check.sh</code></pre>
 
 <!-- ─────────────────────────────────────────────────────────── -->
 <h2 id="branches">6. Branch map</h2>
