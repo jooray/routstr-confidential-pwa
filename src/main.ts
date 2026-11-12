@@ -198,7 +198,10 @@ function applyTheme(): void {
 applyTheme();
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
 // `?prewarm=0` (tests) or the user's choice in the Costs panel.
-let prewarmOn = new URLSearchParams(location.search).get("prewarm") === "0" ? false : load(K.prewarm, true);
+// Off by default: on HTTP/2 the open connection stays warm between messages; a prepared
+// connection only helps after it idled out, and costs its deposit if never used.
+const prewarmParam = new URLSearchParams(location.search).get("prewarm");
+let prewarmOn = prewarmParam === "0" ? false : prewarmParam === "1" ? true : load(K.prewarm, false);
 type HttpSetting = "auto" | ConfidentialFraming;
 const HTTP_SETTINGS: HttpSetting[] = ["auto", "2", "1.1"];
 /** `?http=1.1` (tests) or the user's choice in the Node panel. */
@@ -659,7 +662,7 @@ function costsCard(): HTMLElement {
       {},
       h("strong", {}, "Pre-warming: "),
       deposit > 0
-        ? `after your first message, keeping a connection prepared (its two-party setup done) makes the next answer faster when no connection is open. It costs nothing if you use it; one you never use costs its ${formatSats(deposit)} deposit. It is only prepared while this page is visible and you have funds for the deposit and one message.`
+        ? `off by default, because on HTTP/2 the open connection already stays warm between messages (for about two minutes of idle). Turned on, after your first message the app also keeps a connection prepared (its two-party setup done), so the answer after a longer pause starts faster. It costs nothing if you use it; one you never use costs its ${formatSats(deposit)} deposit. It is only prepared while this page is visible and you have funds for the deposit and one message.`
         : "after your first message, keeping a connection prepared makes the next answer faster when no connection is open, and costs nothing extra. It is only prepared while this page is visible and you have funds.",
     ),
     h(
@@ -1102,7 +1105,7 @@ function renderStatus(): void {
   }
 }
 
-const DEFAULT_MODEL = "deepseek-v4-flash-0731";
+const DEFAULT_MODEL = "deepseek-v4-1-flash-1017-uncensored";
 const modelPicker = combobox({ id: "model", ariaLabel: "Model (type to filter)", onPick: () => onModelChange() });
 
 function renderModels(): void {
@@ -2125,7 +2128,7 @@ async function loadGallery(): Promise<void> {
   const g = $("gallery");
   const stored = await listImages();
   if (!stored.length) {
-    g.replaceChildren(h("div", { class: "empty", id: "gallery-empty" }, h("p", {}, "Images you generate appear here. They are kept only in this browser."), h("p", { class: "muted" }, "Each request is a confidential session of its own: the provider receives your prompt encrypted end to end, and the node charges the signed flat price.")));
+    g.replaceChildren(h("div", { class: "empty", id: "gallery-empty" }, h("p", {}, "Images you generate appear here. They are kept only in this browser."), h("p", { class: "muted" }, "Each image is a confidential request (on HTTP/2 it reuses the chat's open connection): the provider receives your prompt encrypted end to end, and the node charges the signed flat price.")));
     return;
   }
   g.replaceChildren(...stored.map((img) => imageTile(img)));

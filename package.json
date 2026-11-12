@@ -1,7 +1,7 @@
 {
   "name": "routstr-confidential-pwa",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Confidential chat PWA for routstr nodes (confidential mode v3, verified in the browser)",
   "license": "MIT",
   "type": "module",

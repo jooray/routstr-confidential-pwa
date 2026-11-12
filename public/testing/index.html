@@ -207,7 +207,7 @@ Opening a connection costs the node real bandwidth before you have sent anything
 <li>You get it back if the node, its sidecar or the provider failed.</li>
 </ul>
 <p>
-<strong>Pre-warming</strong> (Costs panel, <em>Keep a connection prepared</em>): after your first answer the app
+<strong>Pre-warming</strong> (Costs panel, <em>Keep a connection prepared</em>) is off by default: on HTTP/2 the open connection already stays warm between messages, for about two minutes of idle. When you turn it on, after your first answer the app
 prepares one connection in the background while the page is visible, so the next message after a pause is fast.
 An unused prepared connection costs its deposit. The app does not pre-warm when the deposit is above 5 sats, on a
 metered connection, or when your balance cannot cover the deposit plus one message.

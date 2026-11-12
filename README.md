@@ -83,13 +83,14 @@ with a banner, and no request is sent to it.
   API key. HTTP/1.1 opens a connection per message. The header shows which
   one the next message uses; a node whose HTTP/2 fails to open falls back to
   HTTP/1.1 for 10 minutes.
-- **Pre-warming.** After your first answer with a funded key, one connection
+- **Pre-warming** (off by default; on HTTP/2 the open connection already stays
+  warm between messages). When turned on, after your first answer with a funded key, one connection
   is kept prepared (2PC done, no provider connection yet) while the page is
   visible and you are active, when no connection is open, so the next
   message after a pause skips the two-party preparation. It never arms
   without a balance for the deposit plus one message. It does not arm if the
   node's connection deposit (what an unused prepared connection costs) is
-  above 5 sats. You can turn it off.
+  above 5 sats.
 - **Versioned releases with automatic update.** The page checks
   `version.json` on load, when it becomes visible, and every 5 minutes. On a
   new version the service worker updates and the page reloads by itself
