@@ -799,6 +799,7 @@ function depositText(r: ConfidentialSessionResult): string {
   const d = r.deposit;
   if (!d.msat) return "none (the node takes no deposit)";
   if (d.releasedMsat !== undefined) return `${formatSats(d.releasedMsat)} released by this answer (the connection's first)`;
+  if (d.outcome?.reason === "request_settled") return `${formatSats(d.msat)} released earlier, by this connection's first answer`;
   const later = depositOutcomes.get(r.sid);
   if (later) return `${formatSats(later.msat)} ${later.outcome} (${later.reason})${later.signed ? ", signed by the node" : ""}`;
   return `${formatSats(d.msat)}, released by this connection's first answer`;
