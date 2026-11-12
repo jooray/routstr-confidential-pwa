@@ -11,9 +11,12 @@ For more depth, there is a programmer's guide, [How routstr confidential mode wo
 
 It is built on the library
 [routstr-confidential-web](https://github.com/jooray/routstr-confidential-web).
-The library runs protocol v2 (two-party TLS key schedule, zero-knowledge
-proofs, signed receipts) in the page, with the cryptography in wasm in a Web
-Worker. That README explains how a request works and the security model.
+The library runs protocol v3 (connections carrying requests, the two-party
+TLS key schedule `split-public-1`, zero-knowledge proofs, signed receipts) in
+the page, with the cryptography in wasm in a Web Worker. That README explains
+how a connection and its requests work and the security model. It needs a
+node on protocol v3: a node that still offers v2 is shown as "node outdated"
+with a banner, and no request is sent to it.
 
 ## What the app does
 
@@ -23,17 +26,23 @@ Worker. That README explains how a request works and the security model.
 - **Verification panel for every answer**:
   - The provider's certificate chain as your browser validated it: subject,
     SANs, issuers, validity, SPKI SHA-256, and the hostname match.
-  - The TLS parameters: TLS 1.3, AES-128-GCM, and a P-256 joint key share from
-    the 2PC.
-  - The proofs: π_NK, π_C2S, π_C3S.
-  - The node-signed attestation and receipt: usage, cost, the rates, and the
-    signature.
+  - The TLS parameters: TLS 1.3, AES-128-GCM, a P-256 joint key share from
+    the 2PC, and the ALPN (`h2` or `http/1.1`).
+  - The proofs: π_NK (once per connection), π_WIN (the request's records),
+    π_C3S (the usage disclosure).
+  - The connection: HTTP/2 or HTTP/1.1 to the provider, the request's number
+    on its connection, and whether it ran on a kept, a prepared or a new
+    connection (also on each answer's line).
+  - The node-signed attestation and receipt: usage, cost, the rates, the
+    session fee (once per connection), the connection deposit and what
+    became of it, and the signature.
   - Timings, cold or warm.
 - **Wallet**:
   - Fund with **Lightning**: the node issues an invoice, with a QR code. A
     paid invoice creates or tops up your key.
   - Fund with **Cashu**: paste a token to create or top up an `sk-` key.
-  - See your balance and reserved amount.
+  - See your balance and reserved amount (requests in flight and connection
+    deposits).
   - **Withdraw** the whole balance back to a Cashu token or a Lightning
     address, so you never strand sats.
   - Your key is kept in memory. It goes into `localStorage` only if you tick
@@ -42,13 +51,14 @@ Worker. That README explains how a request works and the security model.
 - **Costs, in plain language**, all read from the signed offer:
   - The cost per message (usage × signed rates).
   - The balance each model needs: the node reserves the worst case while a
-    request runs and releases the rest.
-  - The fee for an unused prepared session (`abandon_fee_msat`; 2 sats on
-    `routstr.cypherpunk.today`).
-  - Any session fee or surcharge.
+    request runs and releases the rest; a new connection also reserves the
+    connection deposit (`connection_deposit_msat`), released by its first
+    answer.
+  - What an unused prepared connection costs: its deposit.
+  - Any session fee (once per connection) or surcharge.
   - Mint input fees (`/v1/keysets` `input_fee_ppk`) and Lightning routing
     fees, shown where you fund or withdraw.
-- **Image generation** through the same confidential session (models,
+- **Image generation** through the same confidential connections (models,
   variants and per-image prices from the signed offer; on demand, never
   pre-armed). Generated images are re-encoded in the browser (no provider
   metadata kept) and kept in this browser's IndexedDB **together with their
@@ -61,10 +71,21 @@ Worker. That README explains how a request works and the security model.
   request, so the node never sees it and no image host is contacted. The
   provider bills it as input tokens, which the receipt shows; it is re-sent
   (and billed again) with every later message in the same chat.
-- **Pre-warming.** After your first message with a funded key, one session
-  is kept armed (2PC done) while the page is visible and you are active, so
-  the next answers come fast. The first message runs cold. It never arms without a balance. It does not arm if the node's
-  unused-session fee is above 5 sats. You can turn it off.
+- **HTTP/2 to the provider** (Node panel: auto, HTTP/2 only, or HTTP/1.1 =
+  HTTP/2 off). With HTTP/2 one connection, and one two-party handshake,
+  serves your next messages while you keep chatting (the node closes it
+  after its idle time), so later answers start in well under a second. The
+  provider can tell those messages come from one client, as it can for one
+  API key. HTTP/1.1 opens a connection per message. The header shows which
+  one the next message uses; a node whose HTTP/2 fails to open falls back to
+  HTTP/1.1 for 10 minutes.
+- **Pre-warming.** After your first answer with a funded key, one connection
+  is kept prepared (2PC done, no provider connection yet) while the page is
+  visible and you are active, when no connection is open, so the next
+  message after a pause skips the two-party preparation. It never arms
+  without a balance for the deposit plus one message. It does not arm if the
+  node's connection deposit (what an unused prepared connection costs) is
+  above 5 sats. You can turn it off.
 - **Versioned releases with automatic update.** The page checks
   `version.json` on load, when it becomes visible, and every 5 minutes. On a
   new version the service worker updates and the page reloads by itself

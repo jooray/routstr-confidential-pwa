@@ -33,9 +33,12 @@ const pubkey = Buffer.from(schnorr.getPublicKey(sk)).toString("hex");
 const head = (path) =>
   `POST /api/v1/${path} HTTP/1.1\r\nHost: api.venice.ai\r\nAuthorization: Bearer {KEY:63}\r\nContent-Type: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\nContent-Length: {LEN}\r\n\r\n`;
 const body = {
-  v: 2,
-  min_v: 2,
-  max_v: 2,
+  v: 3,
+  twopc: "split-public-1",
+  http: ["2", "1.1"],
+  h2: { probe_path: "/api/v1/models", idle_secs: 300, max_requests: 100, max_lifetime_s: 3600, kinds: ["chat", "images"] },
+  connection_deposit_msat: 2000,
+  idle_timeout_s: 120,
   upstream_host: "api.venice.ai",
   notary_pubkey: pubkey,
   max_tokens_cap: 32768,

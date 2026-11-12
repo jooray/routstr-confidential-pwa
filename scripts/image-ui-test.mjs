@@ -21,9 +21,12 @@ const sk = new Uint8Array(32).fill(7);
 const pubkey = Buffer.from(schnorr.getPublicKey(sk)).toString("hex");
 const fixed = [["return_binary", false], ["enhance_prompt", false], ["enable_web_search", false], ["style_references", []]];
 const body = {
-  v: 2,
-  min_v: 2,
-  max_v: 2,
+  v: 3,
+  twopc: "split-public-1",
+  http: ["2", "1.1"],
+  h2: { probe_path: "/api/v1/models", idle_secs: 300, max_requests: 100, max_lifetime_s: 3600, kinds: ["chat", "images"] },
+  connection_deposit_msat: 2000,
+  idle_timeout_s: 120,
   upstream_host: "api.venice.ai",
   notary_pubkey: pubkey,
   max_tokens_cap: 32768,
@@ -80,7 +83,8 @@ for (const vp of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
       sent.push(msg);
       if (msg.type === "setup") {
         const stop = () => ws.send(JSON.stringify({ type: "error", reason: "test node stops here", status: 503 }));
-        if (msg.kind === "images" && holdImageMs) setTimeout(stop, holdImageMs);
+        // Protocol v3: a setup names no request (no kind); the hold applies to the image's own setup.
+        if (holdImageMs) setTimeout(stop, holdImageMs);
         else stop();
       }
     });
@@ -111,7 +115,7 @@ for (const vp of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
   check(`${tag} image controls shown, chat controls hidden`, await page.evaluate(() => !document.getElementById("image-controls").hidden && document.getElementById("chat-controls").hidden));
   check(`${tag} default image model`, (await page.inputValue("#img-model")) === "qwen-image-2-1-turbo", await page.inputValue("#img-model"));
   const est = await page.textContent("#img-estimate");
-  check(`${tag} estimate: price and setup data`, /24\.3\d* sat|24 sat/.test(est) && /26 MB/.test(est), est);
+  check(`${tag} estimate: price and setup data`, /24\.3\d* sat|24 sat/.test(est) && /21 MB/.test(est), est);
   check(`${tag} one variant: no resolution choice`, await page.$eval("#img-variant-label", (l) => l.hidden));
   await page.selectOption("#img-model", "nano-banana-pro");
   check(`${tag} tiers: resolution choice`, !(await page.$eval("#img-variant-label", (l) => l.hidden)));
@@ -127,11 +131,12 @@ for (const vp of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
   await page.click("#send");
   await page.waitForFunction(() => document.querySelector(".image-pending.error, .image-pending .cross"), null, { timeout: 30000 });
   const setup = sent.find((m) => m.type === "setup");
-  check(`${tag} one cold session`, sockets.length >= 1 && sockets.every((u) => u.includes("/v1/confidential/ws")), JSON.stringify(sockets));
+  check(`${tag} one new connection`, sockets.length >= 1 && sockets.every((u) => u.includes("/v1/confidential/ws") && u.endsWith("&v=3")), JSON.stringify(sockets));
   check(
-    `${tag} image setup: kind, variant, count; no armed, no max_tokens, no suffix`,
-    setup && setup.kind === "images" && setup.model === "nano-banana-pro" && setup.variant === "2K-webp" && setup.count === 2 &&
-      !("armed" in setup) && !("max_tokens" in setup) && !("suffix" in setup) && setup.offer_sig === sig && setup.abandon_fee_msat === 2000,
+    `${tag} v3 setup: framing, not armed, the signed offer; no request terms (they go in the request after ready)`,
+    setup && setup.v === 3 && setup.http === "2" && setup.armed === false && setup.offer_sig === sig && typeof setup.auth === "string" &&
+      !("kind" in setup) && !("model" in setup) && !("variant" in setup) && !("count" in setup) && !("max_tokens" in setup) && !("suffix" in setup) &&
+      !("abandon_fee_msat" in setup),
     JSON.stringify(setup && { ...setup, auth: "…" }),
   );
   check(`${tag} the prompt is not in the setup`, !JSON.stringify(setup ?? {}).includes("lighthouse"));
@@ -154,11 +159,12 @@ for (const vp of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
     await page.evaluate(() => window.__rc.client().prewarmer.activity());
     await page.waitForTimeout(1500);
     const during = sent.slice(before).filter((m) => m.type === "setup");
-    check("image session: chat activity arms nothing alongside it", during.length === 1 && during[0].kind === "images", JSON.stringify(during.map((m) => m.kind ?? (m.armed ? "chat-armed" : "chat"))));
+    check("image request: chat activity arms nothing alongside it", during.length === 1 && during[0].armed === false, JSON.stringify(during.map((m) => (m.armed ? "armed" : "request"))));
     await page.waitForFunction(() => document.querySelectorAll(".image-pending:not(.error)").length === 0, null, { timeout: 30000 });
     await page.waitForTimeout(1500);
-    const after = sent.slice(before).filter((m) => m.type === "setup" && m.kind !== "images");
-    check("after the image, the chat pool arms again (the gate was what held it)", after.length >= 1, JSON.stringify(after.length));
+    // v3: the pool arms only for a key with a settled chat request; an image request never arms one.
+    const armed = sent.slice(before).filter((m) => m.type === "setup" && m.armed === true);
+    check("an image request never arms a connection", armed.length === 0, JSON.stringify(armed.length));
     holdImageMs = 0;
     // A noisy 1792×1008 lossless WebP, as large as a provider image: the
     // re-encode keeps it at most 1200 px wide and much smaller.
