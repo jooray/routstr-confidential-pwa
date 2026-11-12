@@ -49,7 +49,11 @@ self.addEventListener("fetch", (event) => {
           }
           return res;
         })
-        .catch(() => caches.match("./").then((r) => r || Response.error())),
+        .catch(() =>
+          (isShell ? Promise.resolve(undefined) : caches.match(url.pathname.endsWith("/") ? `${url.pathname}index.html` : req, { ignoreSearch: true }))
+            .then((own) => own || caches.match("./"))
+            .then((r) => r || Response.error()),
+        ),
     );
     return;
   }
