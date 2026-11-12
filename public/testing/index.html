@@ -1,0 +1,690 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="description" content="How to test routstr confidential mode, protocol v3: the web app, routstrd, the libraries, and running a node.">
+<meta name="color-scheme" content="light dark">
+<title>Testing confidential mode</title>
+<link rel="icon" href="../icons/icon.svg" type="image/svg+xml">
+<style>
+:root {
+  --bg: #f6f7f9;
+  --fg: #1a1f26;
+  --muted: #5a6573;
+  --card: #ffffff;
+  --border: #d9dee5;
+  --code-bg: #eef1f5;
+  --link: #0b5cad;
+  --warn-bg: #fff6e0;
+  --warn-border: #e3b341;
+  --accent: #1f7a4d;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1016;
+    --fg: #e3e8ee;
+    --muted: #98a3b0;
+    --card: #121922;
+    --border: #273241;
+    --code-bg: #18212c;
+    --link: #79b8ff;
+    --warn-bg: #2a2310;
+    --warn-border: #9a7a22;
+    --accent: #5cc98f;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+main { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 1.9rem; line-height: 1.25; margin: 0.4em 0 0.3em; }
+h2 { font-size: 1.4rem; line-height: 1.3; margin: 2.4em 0 0.6em; padding-top: 0.6em; border-top: 1px solid var(--border); }
+h3 { font-size: 1.12rem; margin: 1.8em 0 0.5em; }
+p, li { overflow-wrap: break-word; }
+a { color: var(--link); }
+code {
+  font: 0.88em/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  background: var(--code-bg);
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  max-width: 100%;
+}
+pre code { background: none; padding: 0; font-size: 0.86em; overflow-wrap: normal; white-space: pre; }
+.table-wrap { overflow-x: auto; max-width: 100%; margin: 1em 0; }
+table { border-collapse: collapse; width: 100%; font-size: 0.94em; }
+th, td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; vertical-align: top; }
+th { background: var(--code-bg); }
+td code { overflow-wrap: normal; white-space: nowrap; }
+.warn {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin: 1em 0;
+}
+.note { color: var(--muted); font-size: 0.94em; }
+.toc { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; }
+.toc ol { margin: 0.3em 0; padding-left: 1.4em; }
+.toc ol ol { list-style: lower-alpha; }
+.lead { color: var(--muted); margin-top: 0; }
+.back { font-size: 0.94em; }
+kbd { font: 0.85em ui-monospace, Menlo, monospace; border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; background: var(--card); }
+footer { margin-top: 3em; color: var(--muted); font-size: 0.9em; }
+</style>
+</head>
+<body>
+<main>
+<p class="back"><a href="../">Back to the app</a></p>
+<h1>Testing routstr confidential mode (protocol v3)</h1>
+<p class="lead">For people who want to try it: users first, then developers, then node operators.</p>
+
+<div class="warn">
+<strong>Experimental.</strong> This is new cryptography that nobody outside the project has reviewed yet. The
+code is on forks, not in Routstr releases. Test with small amounts (a few hundred sats), and expect bugs.
+</div>
+
+<nav class="toc" aria-label="Contents">
+<strong>Contents</strong>
+<ol>
+<li><a href="#what">What this is</a></li>
+<li><a href="#pwa">End users: the web app</a></li>
+<li><a href="#routstrd">End users: routstrd, for any app</a></li>
+<li><a href="#dev">Developers</a>
+  <ol>
+  <li><a href="#dev-web">The browser library</a></li>
+  <li><a href="#dev-sdk">The SDK (Node and Bun)</a></li>
+  </ol>
+</li>
+<li><a href="#node">Node operators</a></li>
+<li><a href="#branches">Branch map</a></li>
+<li><a href="#report">Reporting problems</a></li>
+</ol>
+</nav>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<h2 id="what">1. What this is</h2>
+<p>
+A routstr node normally sees everything you send to the AI model and everything it answers. In confidential
+mode the node only relays encrypted traffic between you and the provider (Venice, for now). It cannot read
+your prompt or the answer, and you never get the node's provider API key. Zero-knowledge proofs make sure
+neither side cheats, and you pay for the usage the provider itself reported.
+</p>
+<p>
+This guide covers <strong>protocol v3</strong>. A connection to the provider can now carry several requests:
+over HTTP/2 the expensive setup runs once and later messages reuse it. Over HTTP/1.1 every request gets its
+own connection. None of this is merged into upstream Routstr yet, so every step below uses forks
+(see the <a href="#branches">branch map</a>).
+</p>
+<p>Background reading, all on GitHub:</p>
+<ul>
+<li><a href="https://github.com/jooray/routstr-confidential/blob/main/paper/paper.pdf">The paper</a> (PDF): the guarantees and the two-party handshake.</li>
+<li><a href="https://github.com/jooray/routstr-confidential/blob/main/docs/ONE-PAGER.pdf">One-pager</a> (PDF): the short version for users.</li>
+<li><a href="https://github.com/jooray/routstr-confidential/blob/main/docs/V2-V3-ONE-PAGER.pdf">What changed from v2 to v3</a> (PDF).</li>
+<li><a href="https://github.com/jooray/routstr-confidential/blob/main/PROTOCOL-V3.md">PROTOCOL-V3.md</a>: the full specification.</li>
+</ul>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<h2 id="pwa">2. End users: the web app</h2>
+<p>Nothing to install. The app does all the cryptography in your browser.</p>
+
+<h3>Get started</h3>
+<ol>
+<li>Open <a href="https://jooray.github.io/routstr-confidential-pwa/">jooray.github.io/routstr-confidential-pwa</a>.
+  The default node is <code>https://routstr.cypherpunk.today</code>. The header should say
+  <strong>offer verified</strong>: the app checked the node's signed price list against the node key it has pinned.</li>
+<li>Fund it in the <strong>Wallet</strong> panel. You have three options:
+  <ul>
+  <li><strong>Lightning</strong>: enter an amount in sats (500 is filled in) and press <kbd>Lightning</kbd>. Pay the
+    invoice (QR code or copy). Once it is paid, the node creates a key for you, or tops up the one you have.
+    Your wallet may add a routing fee.</li>
+  <li><strong>Pay with Cashu</strong>: paste a <code>cashuA…</code> or <code>cashuB…</code> token and press
+    <kbd>Create key</kbd> (or <kbd>Top up</kbd>). The panel lists the mints the node accepts and any mint fee.</li>
+  <li><strong>Use an existing key</strong>: paste an <code>sk-…</code> key you already have on this node.</li>
+  </ul>
+  The key lives only in this tab unless you tick <strong>Remember on this device</strong> under
+  <em>Your key</em>. Copy it somewhere if you leave money on it. <strong>Withdraw (refund)</strong> returns the
+  whole balance as a Cashu token or to a Lightning address.</li>
+<li>Pick a model, type a message and send it.</li>
+</ol>
+
+<h3>Reading the result</h3>
+<p>Under each answer there is a line like this:</p>
+<pre><code>verified  HTTP/2 · #2  kept connection  first token 0.6 s  total 1.4 s  21/48 tok  0.04 sat  [details]</code></pre>
+<div class="table-wrap"><table>
+<tr><th>Part</th><th>Meaning</th></tr>
+<tr><td><strong>verified</strong></td><td>Every check passed: the provider's certificate, the proofs, the node's signed receipt, and a cost within the signed prices. If a check fails you get an error here instead.</td></tr>
+<tr><td><strong>HTTP/2 · #2</strong> or <strong>HTTP/1.1</strong></td><td>How the browser talked to the provider (the "framing"). With HTTP/2, <code>#2</code> is the request's number on its connection.</td></tr>
+<tr><td><strong>new / kept / prepared connection</strong></td><td><em>new</em>: this message opened a connection (slow, about 18 MB of setup data). <em>kept</em>: it reused an open HTTP/2 connection (fast). <em>prepared</em>: it used a connection the app had set up ahead (see pre-warming below).</td></tr>
+<tr><td>tokens and cost</td><td>From the signed receipt.</td></tr>
+</table></div>
+<p>
+Press <strong>details</strong> to open the Verification panel. It shows the provider's certificate chain, the
+proofs (π_NK, π_WIN, π_C3S), and the <strong>Receipt</strong> card: usage, cost, the session fee, the connection
+deposit and what happened to it, and the <strong>connection</strong> row (the first characters of the connection id
+<code>sid</code> and the request number <code>n</code>). The full signed receipt JSON is at the bottom of that card.
+A timeline shows where the time went.
+</p>
+
+<h3>HTTP/2 or HTTP/1.1</h3>
+<p>
+Open the <strong>Node</strong> panel and find <strong>HTTP to the provider</strong>: <em>auto</em> (HTTP/2 when
+the node offers it), <em>HTTP/2 only</em>, or <em>HTTP/1.1 (HTTP/2 off)</em>. The pill in the header shows what
+your next message will use.
+</p>
+<ul>
+<li><strong>HTTP/2</strong>: one connection serves your next messages until the node closes it after its idle time.
+  Later answers start in under a second. The cost is that the provider can tell those messages come from one client.
+  It can already do that for everything sent with one API key.</li>
+<li><strong>HTTP/1.1</strong>: every message opens its own connection. Slower, and no two messages share a connection.</li>
+</ul>
+<p>If HTTP/2 fails to open on a node, the app uses HTTP/1.1 for that node for 10 minutes and tells you so.</p>
+
+<h3>The connection deposit</h3>
+<p>
+Opening a connection costs the node real bandwidth before you have sent anything. So the node holds a small
+<strong>connection deposit</strong> when a connection opens (the Node panel and the Costs panel show the amount).
+</p>
+<ul>
+<li>The first answer on that connection gives it back. The receipt says so.</li>
+<li>The node keeps it if the connection ends with no answer through your doing: a prepared connection you never
+  used, a message you stopped before it reached the provider, or a failed proof.</li>
+<li>You get it back if the node, its sidecar or the provider failed.</li>
+</ul>
+<p>
+<strong>Pre-warming</strong> (Costs panel, <em>Keep a connection prepared</em>): after your first answer the app
+prepares one connection in the background while the page is visible, so the next message after a pause is fast.
+An unused prepared connection costs its deposit. The app does not pre-warm when the deposit is above 5 sats, on a
+metered connection, or when your balance cannot cover the deposit plus one message.
+</p>
+
+<h3>Images</h3>
+<p>
+Switch to <strong>Image</strong> mode above the message box. Pick a model, resolution, aspect ratio and count. The
+node sees the model, the resolution and the count, because it charges for those. It does not see the prompt or the
+image. The price is a flat amount per image from the signed offer. Images are kept in this browser's storage with
+their prompt, so delete them from the gallery when you are done. For vision models, the <strong>Image</strong>
+button in chat mode attaches a picture to your message. That picture is sent inside the encrypted request, too.
+</p>
+
+<h3>What a failure looks like</h3>
+<div class="table-wrap"><table>
+<tr><th>You see</th><th>What it means</th></tr>
+<tr><td>A yellow banner: <em>This node runs an old protocol (routstr-confidential v2); this app speaks v3</em>, and the pill <em>node outdated (v2)</em></td><td>The node has not been upgraded. Nothing is sent to it. Pick another node or wait for the operator.</td></tr>
+<tr><td><em>The node speaks a newer protocol than this app. Reload the page to update the app.</em></td><td>The app should update itself within minutes. Reload if it does not.</td></tr>
+<tr><td><em>This app and the node run different versions of the two-party key schedule</em></td><td>The app and the node are from different releases. Reload; if it stays, report it.</td></tr>
+<tr><td><em>Not enough balance for the connection deposit</em> or <em>for this request's reservation</em></td><td>Top up, or lower max tokens. While a request runs the node holds its worst-case cost and then releases the rest.</td></tr>
+<tr><td><em>The node already holds too many unused connections for your address</em></td><td>Other tabs or devices behind the same IP address hold connections. Close them or wait a few minutes.</td></tr>
+<tr><td><em>offer rejected</em> in the header</td><td>The node's signed offer did not verify against the pinned key or the trusted provider. Do not use the node until you know why.</td></tr>
+</table></div>
+<p>
+To try another node, open the <strong>Node</strong> panel, set the node URL, its key (hex or npub) and the trusted
+provider host, then press <kbd>Apply</kbd>. <kbd>Defaults</kbd> goes back to routstr.cypherpunk.today.
+</p>
+<p>
+Report problems as <a href="https://github.com/jooray/routstr-confidential/issues">GitHub issues on
+jooray/routstr-confidential</a>. See <a href="#report">what to include</a>.
+</p>
+<p class="note">
+The app protects you from the node, not from whoever serves the page. The footer shows the app and library
+commits, and <a href="../version.json">version.json</a> lists a hash over every file. Keep balances small.
+</p>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<h2 id="routstrd">3. End users: routstrd, for any app</h2>
+<p>
+routstrd is a local daemon with an OpenAI-compatible API on <code>http://127.0.0.1:8008/v1</code>. Any app that
+can set a base URL and one extra header can use confidential mode through it. For now you have to build it
+from source, together with the SDK and two helper programs.
+</p>
+<p>You need: git, <a href="https://bun.sh">Bun</a>, Node.js with npm, and Rust through
+<a href="https://rustup.rs">rustup</a> (the repository pins its toolchain, 1.97.1, and rustup fetches it).</p>
+
+<h3>Build</h3>
+<p>Put the three checkouts next to each other. The SDK link below relies on that.</p>
+<pre><code>mkdir confidential &amp;&amp; cd confidential
+
+# 1. The helper programs cu-prover and cu-2pc (they must be from the same release as the node's sidecar)
+git clone -b main https://github.com/jooray/routstr-confidential
+(cd routstr-confidential/crypto &amp;&amp; \
+  cargo build --release -p zkbench --bin cu-prover -p twopc --bin cu-2pc)
+# result: routstr-confidential/crypto/zkbench/target/release/cu-prover and cu-2pc
+
+# 2. The SDK with the confidential transport (not on npm yet)
+git clone -b confidential-2pc https://github.com/jooray/routstr-sdk
+(cd routstr-sdk &amp;&amp; npm install &amp;&amp; npm run build)
+
+# 3. routstrd, built against that SDK
+git clone -b confidential-upstream https://github.com/jooray/routstrd
+cd routstrd
+bun install
+rm -rf node_modules/@routstr/sdk &amp;&amp; ln -s "$PWD/../routstr-sdk" node_modules/@routstr/sdk
+bun run build       # after the link, so dist/ bundles the SDK
+bun link            # installs `routstrd` into ~/.bun/bin (put it on your PATH)</code></pre>
+<p>
+The binaries land in <code>crypto/zkbench/target/release/</code>, not in <code>crypto/target</code>
+(the repository sets that build directory). Keep <code>cu-prover</code> and <code>cu-2pc</code> in one directory:
+the SDK looks for <code>cu-2pc</code> next to <code>cu-prover</code>, or in <code>CU_2PC_BIN</code> / <code>CU_2PC</code>.
+Without the SDK link the daemon fails at startup with an <code>Export named … not found</code> error.
+After you update either checkout, run <code>npm run build</code> in routstr-sdk, then <code>bun run build</code> in routstrd.
+</p>
+
+<h3>Fund and configure</h3>
+<pre><code>routstrd onboard
+routstrd receive &lt;cashu token&gt;    # or: routstrd receive 1000   (a Lightning invoice for 1000 sats to pay)</code></pre>
+<p>Then add this block to <code>~/.routstrd/config.json</code> (keep the keys that are already there):</p>
+<pre><code>"confidentialUpstream": {
+  "enabled": true,
+  "trusted_hosts": ["api.venice.ai"],
+  "node_pubkeys": ["2ca46ee98f3134c4e11a638663a45983b590bfdefd31588f9c2f03455fba15e7"],
+  "prover_path": "/absolute/path/to/routstr-confidential/crypto/zkbench/target/release/cu-prover",
+  "http": "auto",
+  "maxConnectionDepositMsat": 100000,
+  "http2": { "reuse": "per-client" },
+  "prewarm": { "enabled": true }
+}</code></pre>
+<div class="table-wrap"><table>
+<tr><th>Key</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>trusted_hosts</code></td><td>(none)</td><td>Provider hostnames whose TLS certificate you accept. Empty refuses every session.</td></tr>
+<tr><td><code>node_pubkeys</code></td><td>(from Nostr)</td><td>Node keys whose signed offers you accept. The key above is routstr.cypherpunk.today's. Without this list, routstrd only trusts a key that announced the node on Nostr and has a review.</td></tr>
+<tr><td><code>prover_path</code></td><td><code>CU_PROVER_BIN</code>, <code>CU_PROVER</code>, <code>PATH</code></td><td>Where <code>cu-prover</code> is.</td></tr>
+<tr><td><code>http</code></td><td><code>auto</code></td><td><code>auto</code> takes the node's first choice and falls back to HTTP/1.1 for 10 minutes if HTTP/2 fails to open. <code>"2"</code> or <code>"1.1"</code> uses only that. <strong><code>"1.1"</code> turns HTTP/2 off.</strong></td></tr>
+<tr><td><code>maxConnectionDepositMsat</code></td><td>100000</td><td>The largest connection deposit you accept. A node that asks for more is not used.</td></tr>
+<tr><td><code>http2.reuse</code></td><td><code>per-client</code></td><td>Which requests may share an HTTP/2 connection: <code>per-client</code> (one local API key), <code>shared</code> (everything this daemon sends to that node), or <code>none</code> (a connection per request).</td></tr>
+<tr><td><code>prewarm.enabled</code></td><td><code>true</code></td><td>Prepare a connection ahead while you are sending requests. An unused one costs its deposit. It only pre-warms nodes whose deposit is at most <code>prewarm.maxDepositMsat</code> (5000).</td></tr>
+</table></div>
+<p class="note">
+More keys (<code>http2.maxConnections</code>, <code>prewarm.maxTotal</code>, …) are in
+<a href="https://github.com/jooray/routstrd/blob/confidential-upstream/docs/confidential-upstream.md">routstrd's docs/confidential-upstream.md</a>.
+</p>
+
+<h3>Run and send a request</h3>
+<pre><code>routstrd start                                            # restart it after editing config.json
+# optional: pin every request to one node
+routstrd start --provider https://routstr.cypherpunk.today
+
+curl -i http://127.0.0.1:8008/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -H 'x-routstr-verify: confidential' \
+  -d '{"model":"deepseek-v4-flash","max_tokens":200,"stream":true,
+       "messages":[{"role":"user","content":"Say hi in three words."}]}'</code></pre>
+<p>
+Pick a model the node lists in its offer (<code>https://routstr.cypherpunk.today/v1/confidential/offer?v=3</code>,
+the <code>price_list</code> keys). <code>max_tokens</code> is required. With the header, a request is either
+confidential or refused; it never goes out in the clear. Only <code>POST /v1/chat/completions</code> and the
+image endpoints (<code>/v1/images/generations</code>, <code>/v1/image/generate</code>) work this way.
+With the OpenAI Python client: <code>default_headers={"x-routstr-verify": "confidential"}</code>.
+</p>
+<p>The response headers tell you what happened:</p>
+<ul>
+<li><code>x-routstr-confidential-http</code>: the framing, <code>2</code> or <code>1.1</code>.</li>
+<li><code>x-routstr-confidential-connection</code>: <code>new</code>, <code>armed</code> (prepared) or <code>reused</code>, and the request's number on its connection.</li>
+</ul>
+<p>
+A stream sends its final <code>data: [DONE]</code> only after the receipt and proofs check out. If a check
+fails, the stream ends with an error and no <code>[DONE]</code>.
+</p>
+
+<h3>Reuse scopes</h3>
+<p>
+Requests on one HTTP/2 connection are linkable for the provider. With the default <code>per-client</code>,
+everything sent with one local API key can be linked that way, across conversations. To narrow it:
+</p>
+<ul>
+<li>Send <code>x-routstr-reuse-scope: &lt;any string up to 256 bytes&gt;</code>, for example one value per
+  conversation. Requests with different scopes never share a connection. The header can only narrow sharing.</li>
+<li>Set <code>"http2": {"reuse": "none"}</code> for a connection per request.</li>
+<li>Set <code>"http": "1.1"</code> to turn HTTP/2 off for confidential requests.</li>
+</ul>
+
+<h3>Logs</h3>
+<pre><code>routstrd logs -n 50                                  # today's log
+routstrd logs -f                                     # follow
+grep '\[confidential\]' ~/.routstrd/logs/$(date +%F).log</code></pre>
+<p>
+Each confidential request writes one line, <code>[confidential] request {...}</code>, with the framing, what it
+found (cold, armed or open connection), time to first token and bytes each way. It holds no content or
+credentials. Other lines to look for:
+</p>
+<ul>
+<li><code>node_protocol_outdated: &lt;node&gt; offers routstr-confidential v2 …</code>: that node is not upgraded and is skipped.
+  If no other node can serve the request, you get a 502 with <code>error_type: "node_protocol_outdated"</code>.</li>
+<li><code>upgrade_required</code>: the node is newer than your routstrd. Pull and rebuild.</li>
+<li><code>twopc_version_mismatch</code>: your <code>cu-2pc</code> and the node's sidecar are from different releases. Rebuild the helpers from <code>main</code>.</li>
+<li><code>framing "2" marked bad</code>: HTTP/2 failed to open, so that node uses HTTP/1.1 for 10 minutes.</li>
+<li><code>retiring armed … unused …; its deposit of N msat is charged</code>: a prepared connection was never used.</li>
+</ul>
+<p>
+Set <code>ROUTSTRD_LOG_LEVEL=debug</code> before <code>routstrd start</code> for more detail. routstrd never
+writes confidential prompts or answers to its request/response log.
+</p>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<h2 id="dev">4. Developers</h2>
+
+<h3 id="dev-web">4a. The browser library</h3>
+<p>
+<a href="https://github.com/jooray/routstr-confidential-web">routstr-confidential-web</a> is what the web app uses.
+The cryptography runs as WebAssembly in a Web Worker. The built wasm is committed, so you do not need Rust.
+Install it from git and pin a commit:
+</p>
+<pre><code>npm install github:jooray/routstr-confidential-web#&lt;commit on main&gt;</code></pre>
+<p>
+npm builds <code>dist/</code> on install. In Vite, set <code>worker: { format: "es" }</code> and
+<code>optimizeDeps: { exclude: ["@routstr/confidential-web"] }</code>. Your page's CSP needs
+<code>script-src 'self' 'wasm-unsafe-eval'</code>, <code>worker-src 'self'</code>, and <code>connect-src</code> for the
+node (<code>https:</code> and <code>wss:</code>). The web app's
+<a href="https://github.com/jooray/routstr-confidential-pwa/blob/main/vite.config.ts">vite.config.ts</a> is a working example.
+</p>
+<pre><code>import { createConfidentialClient } from "@routstr/confidential-web";
+
+const client = createConfidentialClient({
+  node: "https://routstr.cypherpunk.today",
+  nodePubkeys: ["2ca46ee98f3134c4e11a638663a45983b590bfdefd31588f9c2f03455fba15e7"],
+  trustedHosts: ["api.venice.ai"],
+  credential: "sk-…",                 // or client.setCredential(...) later
+  http: "auto",                       // "2", or "1.1" (HTTP/2 off); client.setHttp(...) later
+  prewarm: true,
+  onEvent: (e) =&gt; console.debug(e),   // progress events, never secrets
+});
+
+const stream = await client.chat.completions.create({
+  model: "deepseek-v4-flash",
+  messages: [{ role: "user", content: "Hello" }],
+  max_tokens: 512,
+  stream: true,
+});
+for await (const chunk of stream) out.textContent += chunk.choices[0]?.delta?.content ?? "";
+const v = await stream.verification;  // throws if any proof or receipt check failed
+console.log(v.framing, v.n, v.connection, v.deposit, v.ttftMs, v.receipt.cost_msats);</code></pre>
+
+<p>The main options:</p>
+<div class="table-wrap"><table>
+<tr><th>Option</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>http</code></td><td><code>"auto"</code></td><td>The node's first framing, with a fallback from HTTP/2 to HTTP/1.1. <code>"2"</code> or <code>"1.1"</code> forces one.</td></tr>
+<tr><td><code>reuseScope</code></td><td>one scope per credential</td><td>Requests with different scopes never share a connection, so the provider cannot link them that way.</td></tr>
+<tr><td><code>http2.reuse</code></td><td><code>"shared"</code></td><td><code>"none"</code> opens a connection per request.</td></tr>
+<tr><td><code>maxConnectionDepositMsat</code></td><td>100000</td><td>The largest connection deposit accepted. More is refused before anything is sent.</td></tr>
+<tr><td><code>padBucket</code></td><td>off</td><td>Pad the request body to a multiple of N bytes, or <code>"pow2"</code>. It hides the exact size from network observers and the provider, not from the node, which learns the token count at settlement. It costs upload.</td></tr>
+<tr><td><code>prewarm</code></td><td>off</td><td><code>true</code> or options (<code>maxDepositMsat</code>, default 5000; <code>allowMetered</code>). Keeps one prepared connection while the page is visible and funded.</td></tr>
+<tr><td><code>onNodeProtocolOutdated</code></td><td></td><td>Called when the node's offer names an older protocol.</td></tr>
+</table></div>
+
+<p>What <code>stream.verification</code> resolves to (the main fields):</p>
+<div class="table-wrap"><table>
+<tr><th>Field</th><th>Meaning</th></tr>
+<tr><td><code>sid</code>, <code>n</code></td><td>The connection id and the request's number on it.</td></tr>
+<tr><td><code>framing</code>, <code>stream</code>, <code>fellBack</code></td><td><code>"2"</code> or <code>"1.1"</code>; the HTTP/2 stream; whether HTTP/2 failed and it fell back.</td></tr>
+<tr><td><code>connection</code></td><td><code>"new"</code>, <code>"armed"</code> or <code>"reused"</code>.</td></tr>
+<tr><td><code>receipt</code>, <code>receiptJson</code>, <code>receiptSig</code></td><td>The node-signed receipt.</td></tr>
+<tr><td><code>receiptSigOk</code>, <code>attestationSigOk</code>, <code>usageMatch</code>, <code>costWithinOffer</code></td><td>The checks. All are true, or the call would have thrown.</td></tr>
+<tr><td><code>costMsats</code>, <code>ownUsage</code></td><td>What you paid, and the usage the client decrypted itself.</td></tr>
+<tr><td><code>deposit</code></td><td>The connection deposit and whether this request released it.</td></tr>
+<tr><td><code>provider</code></td><td>The certificate chain, TLS version, cipher suite and ALPN.</td></tr>
+<tr><td><code>http</code>, <code>ttftMs</code>, <code>timings</code></td><td>The provider's status, the time to first token, and per-step timings and proof results.</td></tr>
+</table></div>
+<p>
+Typed errors to handle: <code>NodeProtocolOutdatedError</code> (a v2 node), <code>UpgradeRequiredError</code> (the
+node is newer), <code>TwoPcVersionMismatchError</code>, <code>ConnectionDepositError</code>,
+<code>RequestRefusedError</code> (402 balance, 409 offer changed). Images: <code>client.images.generate({...})</code>.
+The <a href="https://github.com/jooray/routstr-confidential-web#readme">library README</a> has the rest, including
+the security model of serving this code from a web page.
+</p>
+
+<h3 id="dev-sdk">4b. The SDK (Node and Bun)</h3>
+<p>
+The routstr SDK has the same client for Node and Bun. It runs <code>cu-prover</code> and <code>cu-2pc</code> as
+child processes. Build it from the <code>confidential-2pc</code> branch as in <a href="#routstrd">section 3</a>,
+then depend on your local checkout (for example <code>npm install /path/to/routstr-sdk</code>).
+</p>
+<p>A single request, without routing:</p>
+<pre><code>import { fetchConfidential } from "@routstr/sdk/bun";   // or "@routstr/sdk/node"
+
+const res = await fetchConfidential({
+  baseUrl: "https://routstr.cypherpunk.today",
+  bearer: "sk-…",
+  body: { model: "deepseek-v4-flash", max_tokens: 200, stream: true,
+          messages: [{ role: "user", content: "Hello" }] },
+  options: {
+    trustedHosts: ["api.venice.ai"],
+    nodePubkeys: ["2ca46ee98f3134c4e11a638663a45983b590bfdefd31588f9c2f03455fba15e7"],
+    proverPath: "/path/to/cu-prover",   // cu-2pc next to it, or twoPcPath / CU_2PC
+    http: "auto",
+  },
+  reuseScope: "conversation-1",          // optional
+});
+// read res.body as a normal SSE stream, then:
+const { costMsats } = await (res as any).confidentialSettled;
+console.log(res.headers.get("x-routstr-confidential-http"), res.headers.get("x-routstr-confidential-connection"));</code></pre>
+<p>
+With routing, node selection and top-ups, pass the same options as <code>confidential: {...}</code> to
+<code>routeRequests</code> (from <code>@routstr/sdk/bun</code> or <code>/node</code>); <code>RoutstrClient</code>
+then runs <code>fetchConfidential</code> in place of <code>fetch()</code>. Details:
+<a href="https://github.com/jooray/routstr-sdk/blob/confidential-2pc/client/confidential/README.md">client/confidential/README.md</a>
+in the SDK. To test against a node you run: <code>CU_PROVER=… CU_2PC=… bun scripts/confidential-v3-e2e.ts &lt;node&gt; &lt;sk-key&gt; &lt;model&gt;</code>.
+</p>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<h2 id="node">5. Node operators</h2>
+<p>
+A confidential node is a normal Routstr node plus <strong>cu-sidecar</strong>, a small Rust service. The sidecar
+holds the provider key, relays the TLS connection to the provider, writes the one record that carries the key,
+and verifies the client's proofs. Billing uses the node's normal reservation and settlement.
+</p>
+
+<h3>What you need</h3>
+<ul>
+<li>An API key for an OpenAI-compatible provider that you are willing to sell. Only Venice has been tested.</li>
+<li>A server with a public HTTPS name and a reverse proxy that passes WebSockets.</li>
+<li>The node: <a href="https://github.com/jooray/routstr-core/tree/confidential-2pc">jooray/routstr-core</a>, branch <code>confidential-2pc</code>.</li>
+<li>The sidecar: <a href="https://github.com/jooray/routstr-confidential">jooray/routstr-confidential</a>, branch <code>main</code>. Build it with podman/docker or with Rust.</li>
+<li>Python 3 with OpenSSL 1.1.1 or later, for the provider check.</li>
+</ul>
+
+<h3>1. Check your provider</h3>
+<p>
+Confidential mode needs a provider that behaves in specific ways (it waits for the full body, uses the last
+duplicate JSON key, enforces token caps, reports usage in the stream, and more). Check yours with the offer file
+you will deploy. The key goes only to the offer's <code>upstream_host</code>.
+</p>
+<pre><code>cd routstr-confidential
+T=crypto/tools/provider-profile-check.py
+python3 -I $T --offer my-offer.json --key-env MY_PROVIDER_KEY --model &lt;a cheap chat model&gt;          # A1-A13: all must pass
+python3 -I $T --offer my-offer.json --key-env MY_PROVIDER_KEY --model &lt;same&gt; --h2                  # H1-H8: before you offer HTTP/2
+python3 -I $T --offer my-offer.json --key-env MY_PROVIDER_KEY --image-model &lt;model&gt; --images       # I1-I9: before you offer images</code></pre>
+<p>
+The <code>--h2</code> run idles a connection for <code>h2.idle_secs</code> (5 minutes by default) and ends with a
+verdict: <code>offer "2": yes</code>, <code>no, because …</code> (keep HTTP/1.1 only), or <code>not yet</code>
+(run it again). The image run generates three paid images.
+</p>
+
+<h3>2. The sidecar offer file</h3>
+<p>
+Start from <code>crypto/relay/offer.venice.json</code>. It has the host, the request-head template, the
+<code>chat</code> block (the pinned suffix), the HTTP framings and the image endpoint. The file carries no
+prices: models and prices come from the node.
+</p>
+<pre><code>"http": ["2", "1.1"],
+"h2": {"probe_path": "/api/v1/models", "max_requests": 100, "max_lifetime_s": 3600,
+       "idle_secs": 300, "kinds": ["chat", "images"]}</code></pre>
+<div class="table-wrap"><table>
+<tr><th>Field</th><th>Default</th><th>Meaning</th></tr>
+<tr><td><code>http</code></td><td><code>["1.1"]</code></td><td>Framings in your order of preference. Add <code>"2"</code> only after <code>--h2</code> said yes. Keep <code>"1.1"</code> after it: clients fall back to it.</td></tr>
+<tr><td><code>h2.probe_path</code></td><td></td><td>A cheap authenticated GET (the models list). It runs once per connection and stores the key in the provider's header table.</td></tr>
+<tr><td><code>h2.max_requests</code></td><td>100</td><td>Requests per connection (1 to 1000).</td></tr>
+<tr><td><code>h2.max_lifetime_s</code></td><td>3600</td><td>A connection closes at the first settlement after this long.</td></tr>
+<tr><td><code>h2.idle_secs</code></td><td>300</td><td>The sidecar's idle limit. Not longer than the idle time your <code>--h2</code> run passed with.</td></tr>
+<tr><td><code>h2.kinds</code></td><td><code>["chat"]</code></td><td>Add <code>"images"</code> to serve images on HTTP/2 (needs <code>endpoints.images</code>).</td></tr>
+<tr><td><code>endpoints.images</code></td><td></td><td>The image endpoint (Venice: <code>POST /api/v1/image/generate</code>, <code>count_key</code> <code>"variants"</code>). Without it the node offers chat only.</td></tr>
+<tr><td><code>model_allowlist</code></td><td>empty (all)</td><td>Restrict the confidential models.</td></tr>
+</table></div>
+<p>
+For another provider, see <code>docs/SETUP.md</code> and <code>docs/CHAT-SUFFIX.md</code> in routstr-confidential.
+The sidecar refuses at startup a <code>chat</code> block that clients would refuse.
+</p>
+
+<h3>3. Build and run the sidecar</h3>
+<pre><code># container
+podman build -f crypto/Containerfile.sidecar -t cu-sidecar crypto      # or docker
+openssl rand -hex 32     # the shared token: CU_SIDECAR_TOKEN here, CONFIDENTIAL_SIDECAR_TOKEN on the node
+podman run -d --name cu-sidecar --network &lt;node network&gt; \
+  -e UPSTREAM_API_KEY=… -e CU_SIDECAR_TOKEN=… \
+  -v ./my-offer.json:/etc/cu-sidecar/offer.json:ro \
+  cu-sidecar \
+  --listen 0.0.0.0:7444 --upstream api.venice.ai:443 --key-env UPSTREAM_API_KEY \
+  --offer /etc/cu-sidecar/offer.json --node-settles --runs-dir /runs
+
+# or with cargo (binary in crypto/zkbench/target/release/cu-sidecar)
+cd crypto &amp;&amp; cargo build --release -p cu-sidecar</code></pre>
+<ul>
+<li><strong>Never publish the sidecar's port.</strong> It does not check client credentials (the node does that
+  before it connects), so anyone who reaches it spends your provider key. Off loopback it refuses to start without
+  the token. The token crosses the node-to-sidecar link in cleartext: keep that link on loopback or a private
+  container network, or tunnel it.</li>
+<li>The image ships Venice's offer file at <code>/etc/cu-sidecar/offer.json</code>. Mount your own over it if you
+  changed anything.</li>
+<li>Limits: <code>--max-sessions</code> 32 connections, <code>--max-body</code> 8 MiB per request. Run files are
+  kept 24 hours (<code>--runs-keep-hours</code>, 0 removes them at once).</li>
+<li>After 5 HTTP/2 connections in a row fail to open, the sidecar stops offering <code>"2"</code> for 10 minutes and
+  logs <code>framing "2" withdrawn from the offer</code>. If that repeats, run <code>--h2</code> again.</li>
+</ul>
+
+<h3>4. The node</h3>
+<p>Build routstr-core from <code>confidential-2pc</code> (its Dockerfile is the upstream one, or <code>uv sync</code>
+for a source checkout) and set:</p>
+<pre><code>CONFIDENTIAL_SIDECAR_URL=http://cu-sidecar:7444
+CONFIDENTIAL_SIDECAR_TOKEN=&lt;the sidecar's CU_SIDECAR_TOKEN&gt;
+CORS_ORIGINS=https://jooray.github.io,https://your-app.example     # comma-separated, not JSON</code></pre>
+<p>Start it with a long WebSocket ping timeout and <strong>one worker</strong>:</p>
+<pre><code>uvicorn routstr:fastapi_app --host 0.0.0.0 --port 8000 --proxy-headers \
+  --ws-ping-interval 20 --ws-ping-timeout 300</code></pre>
+<ul>
+<li>Use this instead of the image's default <code>fastapi run routstr</code>. On a slow link the keepalive waits
+  behind about 16 MB of setup data, and the default 20 s timeout drops the connection. Do not set
+  <code>--ws-max-size</code> below 12 MiB.</li>
+<li>The node keeps offers and sessions per process. It refuses to start in confidential mode with more than one
+  worker.</li>
+<li>The sidecar URL and token are read only from the environment. The other settings below are stored in the
+  database at first start; after that, change them in the admin settings (<code>PATCH /admin/api/settings</code>)
+  or the dashboard.</li>
+<li>Your reverse proxy must pass WebSockets for <code>/v1/confidential/ws</code> and <code>/v1/confidential/zk</code>
+  (<code>Upgrade</code>/<code>Connection</code> headers, a read timeout of a few minutes).</li>
+<li><code>CORS_ORIGINS</code> must allow the origins of browser clients, or the web app cannot reach your node. The
+  default is <code>*</code>. Like other settings, a value already in the database wins over the environment.</li>
+<li>The provider row must have the type <strong>venice</strong> (add it in the dashboard as a Venice provider).
+  A row seeded from <code>UPSTREAM_BASE_URL</code> has the type <code>custom</code>, and then the offer lists no models.
+  On a scratch test node with SQLite you can fix it directly:
+  <code>delete from upstream_providers where base_url not like '%venice%'; update upstream_providers set provider_type='venice';</code>
+  then restart.</li>
+</ul>
+<div class="table-wrap"><table>
+<tr><th>Setting</th><th>Default</th><th>Effect</th></tr>
+<tr><td><code>CONFIDENTIAL_CONNECTION_DEPOSIT_MSAT</code></td><td>max(abandon fee, session fee, 1000)</td><td>Held when a connection opens, released by its first settled request, kept when the client wastes the connection. <code>0</code> = no deposit.</td></tr>
+<tr><td><code>CONFIDENTIAL_IDLE_TIMEOUT_S</code></td><td>120</td><td>Close a connection with no request in flight after this long. At least 10, at most <code>h2.idle_secs</code>.</td></tr>
+<tr><td><code>CONFIDENTIAL_MAX_ACTIVE_PER_IP</code></td><td>16</td><td>Connections per client address. At the limit the longest-idle used one is closed, otherwise the setup gets 429.</td></tr>
+<tr><td><code>CONFIDENTIAL_MAX_UNUSED_PER_IP</code></td><td>12</td><td>Unused connections per client address (prepared ones count).</td></tr>
+<tr><td><code>CONFIDENTIAL_TRUSTED_PROXIES</code></td><td>none</td><td>Peers whose client-address header is believed, e.g. <code>127.0.0.1,::1</code> for nginx on the same host. Without it, all clients behind your proxy share one limit.</td></tr>
+<tr><td><code>CONFIDENTIAL_SESSION_FEE_MSAT</code></td><td>0</td><td>A flat fee, once per connection, with its first settled request.</td></tr>
+<tr><td><code>CONFIDENTIAL_ABANDON_FEE_MSAT</code></td><td>the session fee</td><td>For a request dropped before it reached the provider, and for most provider 4xx refusals.</td></tr>
+<tr><td><code>CONFIDENTIAL_RATE_SURCHARGE_PCT</code></td><td>0</td><td>Added to the per-token rates and image prices.</td></tr>
+<tr><td><code>CONFIDENTIAL_RESERVE_MARGIN_TOKENS</code></td><td>16</td><td>Completion tokens reserved beyond <code>max_tokens</code>.</td></tr>
+</table></div>
+<p>
+Each connection costs the node about 18 MB of upload and under 0.5 s of CPU, before any request. Size the
+deposit to that. All of these values go into the signed offer, so clients see them before they pay.
+</p>
+
+<h3>5. Check and test</h3>
+<pre><code>curl -s 'https://&lt;node&gt;/v1/confidential/offer?v=3' | jq '{v, http, h2, twopc,
+  connection_deposit_msat, idle_timeout_s, upstream_host, models: (.price_list|keys)}'</code></pre>
+<p>
+<code>v</code> must be <code>3</code>, <code>twopc</code> <code>"split-public-1"</code>, <code>http</code> what your
+offer file lists, and <code>models</code> not empty.
+</p>
+<p>The reference driver (in <code>crypto/client</code>, after <code>npm install</code> there; it needs <code>cu-prover</code> and <code>cu-2pc</code>):</p>
+<pre><code>cd crypto/client &amp;&amp; npm install
+CU_PROVER=../zkbench/target/release/cu-prover CU_2PC=../zkbench/target/release/cu-2pc \
+  node --experimental-strip-types src/driver.ts --node https://&lt;node&gt; --node-pubkey &lt;hex or npub&gt; \
+  --model &lt;model&gt; --max-tokens 40 --http 2 --requests 3 --auth &lt;sk-… or cashu…&gt;
+# then the same with --http 1.1</code></pre>
+<p>It prints every check. The gates run against your provider key and spend a little money:</p>
+<div class="table-wrap"><table>
+<tr><th>Script</th><th>What it checks</th></tr>
+<tr><td><code>VENICE_API_KEY=… crypto/tools/v3-check.sh</code></td><td>Starts its own sidecar on loopback. Honest connections on both framings and attacks by a malicious client.</td></tr>
+<tr><td><code>VENICE_API_KEY=… crypto/tools/v3-node-check.sh</code></td><td>Starts a sidecar and a routstr-core node on scratch state (set <code>CU_CORE</code> to your checkout, with its <code>.venv</code>). Checks the money outcome of every case in the node's database.</td></tr>
+</table></div>
+<p>
+Both exit non-zero on any deviation. <code>CU_KEY_ENV</code>, <code>CU_UPSTREAM</code> and <code>CU_V3_OFFER</code>
+point them at another provider. <code>CU_NO_IMAGES=1</code> skips the paid image cases.
+</p>
+<p>
+With the web app: open the <strong>Node</strong> panel, enter your node URL, its key and the provider host, press
+<kbd>Apply</kbd>, fund and send a message. If the app cannot reach the node, check <code>CORS_ORIGINS</code> first.
+</p>
+
+<h3>6. Announcing, or not</h3>
+<p>
+A node with a sidecar configured adds the tag <code>["confidential","3"]</code> to its Nostr listing, so clients can
+find confidential nodes. A test node should not announce itself. Point <code>RELAYS</code> at a relay that does not
+exist (for example <code>RELAYS=ws://127.0.0.1:9</code>), and stop test nodes when you are done. A forgotten node with
+real relays keeps announcing itself.
+</p>
+<p>
+Upgrading from v2: upgrade the sidecar and the node together. v2 clients then get <code>426 upgrade_required</code>.
+See "Upgrading from v2" in
+<a href="https://github.com/jooray/routstr-confidential/blob/main/docs/SETUP.md">docs/SETUP.md</a>.
+</p>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<h2 id="branches">6. Branch map</h2>
+<p>Nothing here is merged upstream. The pull requests below are open against Routstr.</p>
+<div class="table-wrap"><table>
+<tr><th>Component</th><th>Repository</th><th>Branch</th></tr>
+<tr><td>protocol, sidecar, reference client, paper</td><td><a href="https://github.com/jooray/routstr-confidential">jooray/routstr-confidential</a></td><td><code>main</code> (v3); <code>v2</code> archived</td></tr>
+<tr><td>node</td><td><a href="https://github.com/jooray/routstr-core/tree/confidential-2pc">jooray/routstr-core</a></td><td><code>confidential-2pc</code> (v3; <a href="https://github.com/Routstr/routstr-core/pull/855">Routstr/routstr-core#855</a>); <code>confidential-v2</code> archived</td></tr>
+<tr><td>SDK</td><td><a href="https://github.com/jooray/routstr-sdk/tree/confidential-2pc">jooray/routstr-sdk</a></td><td><code>confidential-2pc</code> (v3; <a href="https://github.com/Routstr/routstr-sdk/pull/112">Routstr/routstr-sdk#112</a>); <code>confidential-v2</code></td></tr>
+<tr><td>routstrd</td><td><a href="https://github.com/jooray/routstrd/tree/confidential-upstream">jooray/routstrd</a></td><td><code>confidential-upstream</code> (v3; <a href="https://github.com/Routstr/routstrd/pull/155">Routstr/routstrd#155</a>); <code>confidential-v2</code></td></tr>
+<tr><td>browser library</td><td><a href="https://github.com/jooray/routstr-confidential-web">jooray/routstr-confidential-web</a></td><td><code>main</code> (v3); <code>v2</code></td></tr>
+<tr><td>web app</td><td><a href="https://github.com/jooray/routstr-confidential-pwa">jooray/routstr-confidential-pwa</a></td><td><code>main</code> (v3); <code>v2</code></td></tr>
+</table></div>
+<p>
+Every component must be on v3. There is no fallback between versions: a v3 node answers a v2 client with
+<code>upgrade_required</code>, and a v3 client reports <code>node_protocol_outdated</code> for a v2 node and does not use it.
+</p>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<h2 id="report">7. Reporting problems</h2>
+<p>Open an issue at <a href="https://github.com/jooray/routstr-confidential/issues">github.com/jooray/routstr-confidential/issues</a>. Include:</p>
+<ul>
+<li><strong>Versions.</strong> Web app: the app and library versions and commits from the footer. routstrd, SDK, helpers: the commit of each checkout (<code>git rev-parse --short HEAD</code>). Node operators: the routstr-core and sidecar commits.</li>
+<li><strong>The node</strong> URL, and the offer's <code>v</code> and <code>http</code>.</li>
+<li><strong>The framing</strong> (HTTP/2 or HTTP/1.1) and what the request found (new, kept/reused, prepared/armed).</li>
+<li><strong>The receipt's <code>sid</code> and <code>n</code></strong> (Receipt card, <em>connection</em> row; or the receipt JSON). With these the operator can find the session in the logs.</li>
+<li><strong>The exact error text</strong>, and for routstrd the <code>[confidential]</code> log lines around it.</li>
+<li>Browser and OS, or Bun/Node version. Your link speed, if the problem is slowness.</li>
+</ul>
+<div class="warn">
+<strong>Never post</strong> your <code>sk-</code> key, Cashu tokens, provider API keys, node nsecs, the sidecar
+token, or your prompts. The receipt JSON is safe to share. It holds usage and costs, no content.
+</div>
+
+<footer>
+<p>This page is part of <a href="https://github.com/jooray/routstr-confidential-pwa">routstr-confidential-pwa</a> (MIT). Corrections are welcome as issues or pull requests.</p>
+</footer>
+</main>
+</body>
+</html>

@@ -1045,6 +1045,7 @@ function openHowDialog(): void {
     h(
       "ul",
       { class: "how-links" },
+      h("li", {}, "Testing guide (this app, routstrd, the libraries, running a node): ", link("./testing/", "Testing confidential mode")),
       h("li", {}, "Programmer's guide: ", link(`${BLOG}wp-content/uploads/2026/10/routstr-confidential-for-programmers.pdf`, "How routstr confidential mode works"), " (PDF, 72 pages; ", link(`${BLOG}wp-content/uploads/2026/10/routstr-confidential-pre-programatorov.pdf`, "Slovak edition"), ")"),
       h("li", {}, "Paper: ", link(`${GH}routstr-confidential/blob/HEAD/paper/paper.pdf`, "Confidential and verifiable upstream inference over standard TLS 1.3")),
       h("li", {}, "Introduction: ", link(`${BLOG}en/blog-en/2026/10/10/confidential-inference-on-routstr-without-trusted-hardware/`, "Confidential inference on Routstr without trusted hardware"), " (blog post)"),
