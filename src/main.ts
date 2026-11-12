@@ -12,6 +12,13 @@ import {
   offerSessionFeeMsat,
   SessionRejectedError,
   UpstreamImageError,
+  NodeProtocolOutdatedError,
+  UpgradeRequiredError,
+  RequestRefusedError,
+  ConnectionDepositError,
+  TwoPcVersionMismatchError,
+  offerConnectionDepositMsat,
+  reservationMsat,
   offerImages,
   type ConfidentialImagesOffer,
   type ConfidentialImageVariant,
@@ -24,6 +31,7 @@ import {
   type ConfidentialSessionResult,
   type ModelPricing,
   type VerifiedOffer,
+  type ConfidentialFraming,
 } from "@routstr/confidential-web";
 import { APP_BUILD, APP_VERSION, idle, setupPwa } from "./pwa";
 import { deleteImage, listImages, putImage, reencode, type StoredImage } from "./imagestore";
@@ -51,6 +59,8 @@ const K = {
   model: "rc:model",
   maxTokens: "rc:max-tokens",
   prewarm: "rc:prewarm",
+  /** The framing towards the provider: "auto", "2" (HTTP/2) or "1.1" (HTTP/2 off). */
+  http: "rc:http",
   remember: "rc:remember",
   timingNumbers: "rc:timing-numbers",
   theme: "rc:theme",
@@ -189,6 +199,20 @@ applyTheme();
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
 // `?prewarm=0` (tests) or the user's choice in the Costs panel.
 let prewarmOn = new URLSearchParams(location.search).get("prewarm") === "0" ? false : load(K.prewarm, true);
+type HttpSetting = "auto" | ConfidentialFraming;
+const HTTP_SETTINGS: HttpSetting[] = ["auto", "2", "1.1"];
+/** `?http=1.1` (tests) or the user's choice in the Node panel. */
+let httpSetting: HttpSetting = ((): HttpSetting => {
+  const q = new URLSearchParams(location.search).get("http");
+  const v = (HTTP_SETTINGS as string[]).includes(q ?? "") ? q : load<string>(K.http, "auto");
+  return (HTTP_SETTINGS as string[]).includes(v ?? "") ? (v as HttpSetting) : "auto";
+})();
+/** The framing the next chat request uses (from the setting, the signed offer and a fallback in force). */
+let nextFraming: ConfidentialFraming | undefined;
+/** The node's offer names an older protocol (node_protocol_outdated): its version. */
+let outdatedNode: number | undefined;
+/** The deposit outcome of each connection, as the node reported it (connection id → text). */
+const depositOutcomes = new Map<string, { msat: number; outcome: string; reason: string; signed: boolean }>();
 let mintFees: MintFee[] | undefined;
 
 // ─── tiny DOM helper ────────────────────────────────────────────────────────
@@ -280,6 +304,16 @@ function logEvent(e: Record<string, unknown>): void {
     prewarmStatus = e.status;
     renderStatus();
   }
+  if (e.ev === "deposit" && typeof e.sid === "string") {
+    depositOutcomes.set(e.sid, { msat: Number(e.msat), outcome: String(e.outcome), reason: String(e.reason), signed: e.signed === true });
+    if (e.outcome === "charged") toast(`A connection ended unused: the node kept its ${formatSats(Number(e.msat))} deposit (${String(e.reason)}).`, 8000);
+    void refreshBalance();
+  }
+  if (e.ev === "framing_fallback") {
+    toast("HTTP/2 to the provider failed to open on this node: using HTTP/1.1 for 10 minutes.", 8000);
+    void updateFraming();
+  }
+  if (e.ev === "pool" || e.ev === "request_settled") renderConnections();
   const log = document.getElementById("log");
   if (log) {
     log.append(h("div", { class: "mono" }, line));
@@ -295,10 +329,23 @@ function makeClient(): void {
     nodePubkeys: [settings.pubkey],
     trustedHosts: [settings.trustedHost],
     credential,
+    http: httpSetting,
     prewarm: { enabled: prewarmOn },
     onEvent: logEvent,
   });
 }
+
+/** The framing the next chat request would use (shown in the header). */
+async function updateFraming(): Promise<void> {
+  try {
+    nextFraming = client && offer ? await client.framing("chat") : undefined;
+  } catch {
+    nextFraming = undefined;
+  }
+  renderStatus();
+}
+
+const FRAMING_LABEL: Record<ConfidentialFraming, string> = { "2": "HTTP/2", "1.1": "HTTP/1.1" };
 
 // ─── layout ─────────────────────────────────────────────────────────────────
 
@@ -313,7 +360,8 @@ function layout(): void {
         {},
         h("h1", {}, "Confidential Chat"),
         h("span", { class: "pill", id: "offer-pill" }, "offer: …"),
-        h("span", { class: "pill", id: "warm-pill", title: "Pre-warmed session" }, "pre-warm: off"),
+        h("span", { class: "pill", id: "warm-pill", title: "Pre-warmed (armed) connection" }, "pre-warm: off"),
+        h("span", { class: "pill", id: "http-pill", title: "HTTP to the provider (setting in the Node panel)" }, "HTTP: …"),
         h("span", { class: "grow" }),
         h("button", { type: "button", id: "how-btn", class: "icon-btn", onclick: openHowDialog }, "How does this work?"),
         h(
@@ -373,6 +421,7 @@ function layout(): void {
             h("button", { type: "button", id: "clear-chat", class: "secondary", title: "Clear the conversation", onclick: clearChat }, "New chat"),
             ),
           ),
+          h("div", { class: "warnbox proto-banner", id: "proto-banner", hidden: true, role: "alert" }),
           h("div", { class: "messages", id: "messages" }, emptyState()),
           h("div", { class: "messages gallery", id: "gallery" }),
           h("div", { class: "attachments", id: "attachments", hidden: true }),
@@ -582,6 +631,7 @@ function costsCard(): HTMLElement {
   }
   const abandon = offerAbandonFeeMsat(offer);
   const sessionFee = offerSessionFeeMsat(offer);
+  const deposit = offerConnectionDepositMsat(offer);
   const pct = typeof offer.rate_surcharge_pct === "number" ? offer.rate_surcharge_pct : 0;
   card.append(
     h(
@@ -590,7 +640,7 @@ function costsCard(): HTMLElement {
       h("strong", {}, "Prices: "),
       "the line under the model shows the selected model's signed rates, a typical message's cost and the balance it needs. ",
       "You pay the provider-reported usage at those rates",
-      sessionFee ? `, plus a session fee of ${formatSats(sessionFee)}` : "",
+      sessionFee ? `, plus a session fee of ${formatSats(sessionFee)} once per connection` : "",
       pct ? ` (rates include a ${pct}% confidential surcharge)` : "",
       ". While a request runs, the node holds its worst case (a prompt filling the model's whole context plus the max tokens",
       abandon || sessionFee ? `, plus the ${formatSats(Math.max(abandon, sessionFee))} fee` : "",
@@ -599,10 +649,18 @@ function costsCard(): HTMLElement {
     h(
       "p",
       {},
+      h("strong", {}, "Connection deposit: "),
+      deposit
+        ? `opening a connection reserves ${formatSats(deposit)}; the connection's first answer releases it (the receipt says so). A connection that ends without an answer (for example one prepared ahead and never used) loses it, unless the node or the provider failed.`
+        : "this node takes none.",
+    ),
+    h(
+      "p",
+      {},
       h("strong", {}, "Pre-warming: "),
-      abandon > 0
-        ? `after your first message, keeping a session ready makes the next answers faster. It costs nothing if you use it; a prepared session you never use costs ${formatSats(abandon)} (the node's fee for the work it already did). It is only prepared while this page is visible and you have funds.`
-        : "after your first message, keeping a session ready makes the next answers faster and costs nothing extra. It is only prepared while this page is visible and you have funds.",
+      deposit > 0
+        ? `after your first message, keeping a connection prepared (its two-party setup done) makes the next answer faster when no connection is open. It costs nothing if you use it; one you never use costs its ${formatSats(deposit)} deposit. It is only prepared while this page is visible and you have funds for the deposit and one message.`
+        : "after your first message, keeping a connection prepared makes the next answer faster when no connection is open, and costs nothing extra. It is only prepared while this page is visible and you have funds.",
     ),
     h(
       "label",
@@ -620,10 +678,11 @@ function costsCard(): HTMLElement {
           }
         },
       }),
-      "Keep a session ready (pre-warm)",
+      "Keep a connection prepared (pre-warm)",
     ),
   );
-  if (abandon > 5000) card.append(h("p", { class: "warnbox" }, "This node's unused-session fee is above 5 sats, so the app does not pre-warm."));
+  if (deposit > 5000) card.append(h("p", { class: "warnbox" }, "This node's connection deposit is above 5 sats, so the app does not pre-warm."));
+  void abandon;
   return card;
 }
 
@@ -651,8 +710,28 @@ function currentModelOrNull(): ModelPricing | undefined {
 
 function balanceSub(avail?: number): string {
   return balance
-    ? `${formatSats(avail ?? 0)} available · ${formatSats(balance.reserved)} reserved by open sessions`
+    ? `${formatSats(avail ?? 0)} available · ${formatSats(balance.reserved)} reserved (requests in flight, connection deposits)`
     : "loading balance";
+}
+
+/** The page's connections to the node (no credentials): framing, state, requests. */
+function connectionLines(): HTMLElement[] {
+  const list = client?.connections() ?? [];
+  if (!list.length) return [h("p", { class: "muted" }, "No open connection.")];
+  return [
+    h(
+      "p",
+      { class: "muted" },
+      "Connections: ",
+      list
+        .map((c) => `${c.sid ? c.sid.slice(0, 8) : "…"} ${FRAMING_LABEL[c.http]} ${c.state}${c.requests ? `, ${c.requests} request${c.requests > 1 ? "s" : ""}` : ""}`)
+        .join(" · "),
+    ),
+  ];
+}
+
+function renderConnections(): void {
+  document.getElementById("conns")?.replaceChildren(...connectionLines());
 }
 
 function nodeCard(): HTMLElement {
@@ -664,6 +743,32 @@ function nodeCard(): HTMLElement {
     h("div", { class: "field" }, "Trusted provider host", h("input", { id: "set-host", value: settings.trustedHost })),
     h(
       "div",
+      { class: "field" },
+      "HTTP to the provider",
+      h(
+        "select",
+        {
+          id: "set-http",
+          onchange: (e: Event) => {
+            httpSetting = (e.target as HTMLSelectElement).value as HttpSetting;
+            save(K.http, httpSetting);
+            client?.setHttp(httpSetting);
+            void updateFraming();
+            toast(httpSetting === "1.1" ? "HTTP/2 is off: every message opens its own connection." : httpSetting === "2" ? "HTTP/2 only." : "HTTP: the node's choice (HTTP/2 when offered).");
+          },
+        },
+        h("option", { value: "auto", selected: httpSetting === "auto" }, "auto (HTTP/2 when the node offers it)"),
+        h("option", { value: "2", selected: httpSetting === "2" }, "HTTP/2 only"),
+        h("option", { value: "1.1", selected: httpSetting === "1.1" }, "HTTP/1.1 (HTTP/2 off)"),
+      ),
+    ),
+    h(
+      "p",
+      { class: "muted" },
+      "With HTTP/2 one connection to the provider, and one two-party handshake, serves your next messages: faster, and the provider can tell they come from one client (as it can for one API key). HTTP/1.1 opens a connection per message.",
+    ),
+    h(
+      "div",
       { class: "row" },
       h("button", { type: "button", onclick: onSaveSettings }, "Apply"),
       h("button", { type: "button", onclick: () => { Object.assign(settings, DEFAULTS); save(K.settings, settings); void restart(); } }, "Defaults"),
@@ -673,11 +778,30 @@ function nodeCard(): HTMLElement {
           ["offer", check(true, "signature valid, key pinned")],
           ["node key", h("code", {}, short(offer.notary_pubkey))],
           ["provider", check(true, `${offer.upstream_host} (trusted)`)],
-          ["protocol", `v${offer.v} (two-party handshake)`],
-          ["session fee", offer.session_fee_msat ? formatSats(offer.session_fee_msat) : "none"],
+          ["protocol", `v${offer.v} (connections; two-party key schedule ${offer.twopc ?? "?"})`],
+          ["framings", (offer.http ?? ["1.1"]).map((f) => FRAMING_LABEL[f as ConfidentialFraming] ?? f).join(", ") + (offer.h2 ? ` · up to ${offer.h2.max_requests} requests per HTTP/2 connection` : "")],
+          ["connection deposit", offerConnectionDepositMsat(offer) ? formatSats(offerConnectionDepositMsat(offer)) : "none"],
+          ["idle connection closed after", `${offer.idle_timeout_s ?? 120} s`],
+          ["session fee", offer.session_fee_msat ? `${formatSats(offer.session_fee_msat)} once per connection` : "none"],
         ])
       : h("p", { class: offerError ? "cross" : "muted" }, offerError ?? "loading offer…"),
+    h("div", { id: "conns" }, ...connectionLines()),
   );
+}
+
+/** What the request found: a kept connection, an armed one, or a new one. */
+function connectionLabel(r: ConfidentialSessionResult): string {
+  return r.connection === "reused" ? "kept connection" : r.connection === "armed" ? "prepared connection" : "new connection";
+}
+
+/** The connection deposit as this request saw it, and what became of it. */
+function depositText(r: ConfidentialSessionResult): string {
+  const d = r.deposit;
+  if (!d.msat) return "none (the node takes no deposit)";
+  if (d.releasedMsat !== undefined) return `${formatSats(d.releasedMsat)} released by this answer (the connection's first)`;
+  const later = depositOutcomes.get(r.sid);
+  if (later) return `${formatSats(later.msat)} ${later.outcome} (${later.reason})${later.signed ? ", signed by the node" : ""}`;
+  return `${formatSats(d.msat)}, released by this connection's first answer`;
 }
 
 function verificationPanel(): HTMLElement {
@@ -696,7 +820,7 @@ function verificationPanel(): HTMLElement {
   const fee = offer?.session_fee_msat ?? 0;
   const proofRow = (name: string, label: string) => {
     const x = t.proofs?.[name];
-    return [label, x ? check(x.ok, `ok · ${x.ms} ms (${x.via})`) : check(false, "not run")] as [string, Child];
+    return [label, x ? check(x.ok, `ok · ${Math.round(x.ms)} ms (${x.via}${x.runs && x.runs > 1 ? `, ${x.runs} runs` : ""})`) : check(false, "not run")] as [string, Child];
   };
   const ms = (v?: number) => (v === undefined ? "—" : `${Math.round(v)} ms`);
   return h(
@@ -748,9 +872,13 @@ function verificationPanel(): HTMLElement {
       { class: "card" },
       h("strong", {}, "Proofs"),
       kv([
-        ["2PC handshake", check(true, `key schedule run jointly · A ${ms(t.twoPcPhaseAMs)} · B ${ms(t.twoPcPhaseBMs)}`)],
-        proofRow("pi_nk", "π_NK (node key record)"),
-        proofRow("pi_c2s", "π_C2S (pinned suffix)"),
+        r.connection === "reused"
+          ? ["2PC handshake", check(true, `ran once for this connection (request ${r.n} on it); no new handshake`)]
+          : ["2PC handshake", check(true, `key schedule run jointly · A ${ms(t.twoPcPhaseAMs)} · B ${ms(t.twoPcPhaseBMs)}`)],
+        r.connection === "reused"
+          ? ["π_NK (node key record)", check(true, "verified when the connection opened")]
+          : proofRow("pi_nk", r.framing === "2" ? "π_NK (HTTP/2 connection head)" : "π_NK (node key record)"),
+        proofRow("pi_win", "π_WIN (our records: pinned suffix, frames)"),
         r.imageVariant !== undefined && !t.proofs?.pi_c3s
           ? ["π_C3S (usage disclosure)", check(true, "not needed: flat price fixed at setup")]
           : proofRow("pi_c3s", "π_C3S (usage disclosure)"),
@@ -789,7 +917,10 @@ function verificationPanel(): HTMLElement {
         ],
         ["reserved", r.receipt.reserved_msats !== undefined ? formatSats(r.receipt.reserved_msats) : "—"],
         ["balance after", typeof r.receipt.balance_msats === "number" ? formatSats(r.receipt.balance_msats) : "—"],
-        ["session", h("code", {}, short(r.sid, 8))],
+        ["session fee", r.receipt.session_fee_msat ? `${formatSats(Number(r.receipt.session_fee_msat))} (this connection's first answer)` : "not due (paid once per connection)"],
+        ["deposit", depositText(r)],
+        ["HTTP to the provider", `${FRAMING_LABEL[r.framing]}${r.stream !== undefined ? ` · stream ${r.stream}` : ""}${r.fellBack ? " · fell back from HTTP/2" : ""}${r.provider?.alpn ? ` · ALPN ${r.provider.alpn}` : ""}`],
+        ["connection", h("span", {}, h("code", {}, short(r.sid, 8)), ` · request ${r.n} · ${connectionLabel(r)}`)],
       ]),
       h("details", {}, h("summary", {}, "signed receipt JSON"), h("pre", {}, r.receiptJson), h("div", { class: "mono" }, `sig ${r.receiptSig ?? ""}`)),
     ),
@@ -799,7 +930,7 @@ function verificationPanel(): HTMLElement {
       h(
         "div",
         { class: "timing-head" },
-        h("strong", {}, r.prewarmed ? "Timeline (warm: pre-armed session)" : "Timeline (cold)"),
+        h("strong", {}, r.connection === "reused" ? "Timeline (kept connection)" : r.connection === "armed" ? "Timeline (prepared connection)" : "Timeline (new connection)"),
         h("button", { type: "button", class: "icon-btn", title: "Show larger", "aria-label": "Show the timeline larger", onclick: () => openTimelineDialog(r) }, "⤢"),
         h(
           "label",
@@ -820,13 +951,15 @@ function verificationPanel(): HTMLElement {
       !showTimingNumbers ? null : kv([
         [r.images ? "first byte of the image" : "first token", ms(r.ttftMs)],
         ["total", ms(r.totalMs)],
-        ["arm (setup + 2PC preprocessing)", r.prewarmed ? `${ms(t.armMs)} (before the request)` : ms(t.armMs)],
+        ["arm (setup + 2PC preprocessing)", r.connection === "reused" ? "— (kept connection)" : r.prewarmed ? `${ms(t.armMs)} (before the request)` : ms(t.armMs)],
         ["2PC key share", ms(t.twoPcKeyShareMs)],
         ["handshake (2PC A + B)", ms(t.handshakeMs)],
         ["π_NK", ms(t.piNkMs)],
         ["credential record", ms(t.recordMs)],
         ["provider first byte", ms(t.upstreamTtftMs)],
-        ["2PC traffic", t.twoPcBytes ? `${(t.twoPcBytes.sent / 1e6).toFixed(2)} MB up · ${(t.twoPcBytes.recv / 1e6).toFixed(1)} MB down` : "—"],
+        ["2PC traffic", t.twoPcBytes ? `${(t.twoPcBytes.sent / 1e6).toFixed(2)} MB up · ${(t.twoPcBytes.recv / 1e6).toFixed(1)} MB down` : "— (kept connection)"],
+        ["this request", `${(r.bytes.sent / 1e6).toFixed(2)} MB up · ${(r.bytes.recv / 1e6).toFixed(2)} MB down`],
+        ["connection setup", r.setupBytes ? `${(r.setupBytes.sent / 1e6).toFixed(2)} MB up · ${(r.setupBytes.recv / 1e6).toFixed(1)} MB down` : "— (kept connection)"],
       ]),
       showTimingNumbers && t.twoPcSteps?.length
         ? h("details", {}, h("summary", {}, "2PC steps (wasm)"), kv(t.twoPcSteps.map((s) => [s.step, `${Math.round(s.ms)} ms`] as [string, Child])))
@@ -850,7 +983,7 @@ function openTimelineDialog(r: ConfidentialSessionResult): void {
       h(
         "strong",
         {},
-        `${r.prewarmed ? "Warm (pre-armed)" : r.waitedForArmMs !== undefined ? "Waited for pre-arm" : "Cold"} ${r.images ? "image request · first byte" : "request · first token"} ${ms(r.ttftMs)} · total ${ms(r.totalMs)}`,
+        `${r.connection === "reused" ? "Kept connection" : r.connection === "armed" ? "Prepared connection" : "New connection"} (${FRAMING_LABEL[r.framing]}) ${r.images ? "image request · first byte" : "request · first token"} ${ms(r.ttftMs)} · total ${ms(r.totalMs)}`,
       ),
       h("button", { type: "button", class: "icon-btn", "aria-label": "Close", onclick: () => dlg.close() }, "✕"),
     ),
@@ -859,14 +992,14 @@ function openTimelineDialog(r: ConfidentialSessionResult): void {
       "p",
       { class: "muted wf-explain" },
       "Time runs left to right; the blue line is when you sent the message. ",
-      r.prewarmed
-        ? "Everything left of it happened beforehand: the session was set up and the two-party (2PC) preparation, the large part, ran while you were typing. "
-        : r.waitedForArmMs !== undefined
-          ? `A session was still being prepared when you sent the message; the request waited ${ms(r.waitedForArmMs)} for its two-party (2PC) preparation to finish. `
-          : "This request had no prepared session, so the 2PC preparation ran after you sent it. ",
+      r.connection === "reused"
+        ? `This message ran on a connection kept open from an earlier one (request ${r.n} on it, HTTP/2): no setup, no two-party handshake and no π_NK, only the request, its proofs and the answer. `
+        : r.prewarmed
+          ? "Everything left of it happened beforehand: the connection was set up and the two-party (2PC) preparation, the large part, ran while you were typing. "
+          : "This request had no prepared connection, so the 2PC preparation ran after you sent it. ",
       r.images
-        ? "After sending: the TLS handshake with the provider, whose keys the browser and the node compute together (2PC phases A and B); π_NK proves the node's credential record matches the published template; the node writes it; the provider generates the image (the red dashed line is its first byte) and the browser downloads and decrypts it. π_C2S proves the pinned model, resolution and count before the provider sees them. No usage proof is needed: the browser accepts the result and the node charges the signed flat price."
-        : "After sending: the TLS handshake with the provider, whose keys the browser and the node compute together (2PC phases A and B); π_NK proves the node's credential record matches the published template; the node writes it; the provider starts answering (the red dashed line is the first token). π_C2S proves the pinned model and token cap before the provider sees them, and π_C3S discloses only the usage for the receipt.",
+        ? "On a new connection: the TLS handshake with the provider, whose keys the browser and the node compute together (2PC phases A and B); π_NK proves the node's credential record matches the published template; the node writes it. Then: π_WIN proves the pinned model, resolution and count (and, on HTTP/2, every frame) before the provider sees them; the provider generates the image (the red dashed line is its first byte) and the browser downloads and decrypts it. No usage proof is needed: the browser accepts the result and the node charges the signed flat price."
+        : "On a new connection: the TLS handshake with the provider, whose keys the browser and the node compute together (2PC phases A and B); π_NK proves the node's credential record (HTTP/2: the connection head) matches the published template; the node writes it. Then: π_WIN proves the pinned model and token cap (and, on HTTP/2, every frame) before the provider sees them, the provider answers (the red dashed line is the first token), and π_C3S discloses only the usage for the receipt.",
     ),
   );
   dlg.addEventListener("click", (e) => {
@@ -929,20 +1062,41 @@ function openHowDialog(): void {
 
 // ─── header, models, estimate ───────────────────────────────────────────────
 
-const PREWARM_LABEL: Record<string, string> = { "waiting-funds": "needs funds", metered: "off (metered)" };
+const PREWARM_LABEL: Record<string, string> = { "waiting-funds": "needs funds", metered: "off (metered)", hidden: "paused", idle: "ready to arm" };
 
 function renderStatus(): void {
   const op = document.getElementById("offer-pill");
   if (op) {
     op.className = `pill ${offer ? "ok" : offerError ? "bad" : ""}`;
-    op.textContent = offer ? "offer verified" : offerError ? "offer rejected" : "offer: …";
+    op.textContent = offer ? "offer verified" : outdatedNode !== undefined ? `node outdated (v${outdatedNode})` : offerError ? "offer rejected" : "offer: …";
     op.title = offerError ?? (offer ? `signed by ${offer.notary_pubkey}` : "");
   }
   const wp = document.getElementById("warm-pill");
   if (wp) {
-    wp.className = `pill ${prewarmStatus === "armed" ? "ok" : prewarmStatus === "arming" ? "warn" : ""}`;
+    wp.className = `pill ${prewarmStatus === "armed" ? "ok" : ""}`;
     wp.textContent = `pre-warm: ${PREWARM_LABEL[prewarmStatus] ?? prewarmStatus}`;
-    wp.title = prewarmStatus === "metered" ? "Pre-warm is off on a metered connection (Save-Data or cellular)" : "Pre-warmed session";
+    wp.title = prewarmStatus === "metered" ? "Pre-warm is off on a metered connection (Save-Data or cellular)" : "Pre-warmed (armed) connection: the 2PC preparation done ahead";
+  }
+  const hp = document.getElementById("http-pill");
+  if (hp) {
+    hp.className = `pill ${nextFraming === "2" ? "ok" : ""}`;
+    hp.textContent = nextFraming ? FRAMING_LABEL[nextFraming] : "HTTP: …";
+    hp.title =
+      nextFraming === "2"
+        ? "HTTP/2 to the provider: one connection (one two-party handshake) carries your next messages"
+        : nextFraming === "1.1"
+          ? httpSetting === "1.1"
+            ? "HTTP/2 is off (Node panel): every message opens its own connection"
+            : "HTTP/1.1 to the provider: every message opens its own connection"
+          : "HTTP to the provider";
+  }
+  const banner = document.getElementById("proto-banner");
+  if (banner) {
+    banner.hidden = outdatedNode === undefined;
+    banner.textContent =
+      outdatedNode === undefined
+        ? ""
+        : `This node runs an old protocol (routstr-confidential v${outdatedNode}); this app speaks v3. It cannot serve confidential requests until its operator updates it. Pick another node in the Node panel.`;
   }
 }
 
@@ -990,15 +1144,19 @@ function renderEstimate(): void {
   const mt = maxTokens();
   const typical = costMsat(p.rates, { prompt_tokens: inTok, completion_tokens: Math.min(mt, 300) }, p.sessionFeeMsat);
   const worst = costMsat(p.rates, { prompt_tokens: inTok, completion_tokens: mt }, p.sessionFeeMsat);
+  // The node's reservation for this request (the larger context length at the dearer of the
+  // input and cache-write rates, plus max tokens and the fee), and a new connection's deposit.
   const resv =
-    p.promptLimit !== undefined
-      ? Math.ceil((p.promptLimit * p.rates.in + mt * p.rates.out) / 1000) + Math.max(p.sessionFeeMsat, p.abandonFeeMsat)
-      : undefined;
+    offer && p.promptLimit !== undefined
+      ? reservationMsat(offer, p.rates, { id: p.id, context_length: p.promptLimit }, mt)
+      : p.reservationMsat;
+  const deposit = p.connectionDepositMsat;
   el.textContent =
     `≈ ${formatSats(typical)} per message (≤ ${formatSats(worst)} at ${mt} tokens)` +
-    (resv !== undefined ? ` · needs ${formatSats(resv)} available (reserved while it runs)` : "") +
-    (p.abandonFeeMsat ? ` · unused prepared session ${formatSats(p.abandonFeeMsat)}` : "") +
-    (p.sessionFeeMsat ? ` · incl. session fee ${formatSats(p.sessionFeeMsat)}` : "") +
+    (resv !== undefined
+      ? ` · needs ${formatSats(resv + deposit)} available (${formatSats(resv)} reserved while it runs${deposit ? ` + ${formatSats(deposit)} deposit for a new connection` : ""})`
+      : "") +
+    (p.sessionFeeMsat ? ` · session fee ${formatSats(p.sessionFeeMsat)} once per connection` : "") +
     (p.rateSurchargePct ? ` · rates incl. ${p.rateSurchargePct}% surcharge` : "");
   el.classList.remove("too-large");
   const size = attachments.length || turns.some((t) => t.images?.length) ? roughBodyBytes() : 0;
@@ -1375,10 +1533,11 @@ async function onRefund(): Promise<void> {
   const status = (text: string, cls = "muted") => document.getElementById("refund-out")?.replaceChildren(h("p", { class: cls }, text));
   const btn = document.getElementById("refund-btn") as HTMLButtonElement | null;
   if (btn) btn.disabled = true;
-  // The node refuses a refund while a reservation is open: stop pre-warming
-  // (which closes the armed session) and wait until it is released.
+  // The node refuses a refund while a reservation is open: stop pre-warming,
+  // close the connections (an armed one holds its deposit) and wait until
+  // the node released everything.
   client?.setPrewarm(false);
-  client?.prewarmer?.teardown("refund");
+  client?.pool.close();
   try {
     await walletOp(async () => {
       const until = Date.now() + REFUND_WAIT_MS;
@@ -1386,9 +1545,9 @@ async function onRefund(): Promise<void> {
         const b = await nodeApi.balance(key);
         if (b.reserved === 0) break;
         if (Date.now() > until) {
-          throw new Error(`the node still holds ${formatSats(b.reserved)} for an open session (another tab or device?). Try again in a minute`);
+          throw new Error(`the node still holds ${formatSats(b.reserved)} for an open connection (another tab or device?). Try again in a minute`);
         }
-        status(`Waiting for the node to release ${formatSats(b.reserved)} held by an open session…`);
+        status(`Waiting for the node to release ${formatSats(b.reserved)} held by an open connection…`);
         await new Promise((r) => setTimeout(r, 1000));
       }
       status("Withdrawing…");
@@ -1589,6 +1748,14 @@ async function onSend(e: Event): Promise<void> {
     const r = await stream.verification;
     answer.result = r;
     testHook().results.push({
+      framing: r.framing,
+      n: r.n,
+      sid: r.sid.slice(0, 8),
+      connection: r.connection,
+      fellBack: r.fellBack,
+      bytes: { sent: r.bytes.sent, recv: r.bytes.recv },
+      setupBytes: r.setupBytes,
+      deposit: r.deposit,
       prewarmed: r.prewarmed,
       ttftMs: r.ttftMs,
       totalMs: r.totalMs,
@@ -1605,7 +1772,12 @@ async function onSend(e: Event): Promise<void> {
     const usage = r.ownUsage?.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
     meta.replaceChildren(
       h("span", { class: "check" }, "verified"),
-      h("span", {}, r.prewarmed ? "warm" : r.waitedForArmMs !== undefined ? `waited ${(r.waitedForArmMs / 1000).toFixed(1)} s for pre-arm` : "cold"),
+      h(
+        "span",
+        { class: "framing", title: `connection ${r.sid.slice(0, 8)}, request ${r.n} on it${r.stream !== undefined ? `, HTTP/2 stream ${r.stream}` : ""}` },
+        `${FRAMING_LABEL[r.framing]}${r.framing === "2" ? ` · #${r.n}` : ""}${r.fellBack ? " (fallback)" : ""}`,
+      ),
+      h("span", {}, connectionLabel(r)),
       h("span", {}, `first token ${(r.ttftMs / 1000).toFixed(1)} s`),
       h("span", {}, `total ${((performance.now() - t0) / 1000).toFixed(1)} s`),
       h("span", {}, usage ? `${usage.prompt_tokens}/${usage.completion_tokens} tok` : ""),
@@ -1757,9 +1929,22 @@ function renderAttach(): void {
 
 function friendlyError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
+  if (err instanceof NodeProtocolOutdatedError) {
+    return `This node runs an old protocol (routstr-confidential v${err.nodeVersion}); this app speaks v3. The node must be updated before it can serve confidential requests.`;
+  }
+  if (err instanceof UpgradeRequiredError) return "The node speaks a newer protocol than this app. Reload the page to update the app.";
+  if (err instanceof TwoPcVersionMismatchError) return "This app and the node run different versions of the two-party key schedule. Reload the page to update, or pick another node.";
+  if (err instanceof ConnectionDepositError) {
+    return err.status === 402
+      ? `Not enough balance for the connection deposit of ${formatSats(err.depositMsat)} (${raw}). Top up.`
+      : `The node asks for a connection deposit of ${formatSats(err.depositMsat)}, more than this app accepts.`;
+  }
+  if (err instanceof RequestRefusedError && err.status === 402) {
+    return `Not enough balance for this request's reservation (${err.reason}). Top up, or lower max tokens. The connection stays open for the next try.`;
+  }
   if (err instanceof SessionRejectedError) {
     if (err.status === 402) return `Not enough balance for this request's reservation (${raw}). Top up, or lower max tokens.`;
-    if (err.status === 429) return "The node already holds 3 unused sessions for your address (other tabs or devices behind the same IP). Close them or wait a few minutes.";
+    if (err.status === 429) return "The node already holds too many unused connections for your address (other tabs or devices behind the same IP). Close them or wait a few minutes.";
     if (err.status === 409) return `The node's signed offer changed (prices or fees); reload to accept the new one. (${raw})`;
     if (err.status === 401) return `The node does not know this key (${raw}).`;
   }
@@ -1781,8 +1966,8 @@ function testHook(): { results: unknown[]; errors: string[]; renderMarkdown?: (t
 
 const ASPECTS = ["16:9", "4:3", "1:1"];
 const PREFERRED_IMAGE_MODEL = "qwen-image-2-1-turbo";
-/** Protocol data per image (2PC ~22 MB down, ~1.2 MB up, proofs), before the image itself. */
-const SETUP_MB_PER_IMAGE = 26;
+/** Protocol data of a new connection (2PC ~16.4 MB down, ~1.1 MB up, proof channel, handshake), before the image itself. */
+const SETUP_MB_PER_IMAGE = 21;
 let galleryLoaded = false;
 let imageBodySent = false;
 
@@ -1904,8 +2089,8 @@ function renderImageEstimate(): void {
   el.textContent =
     `${formatSats(c.variant.msat_per_image)} per image · ${formatSats(total)} for ${c.count}` +
     (fee ? ` (incl. session fee ${formatSats(fee)})` : "") +
-    ` · about ${SETUP_MB_PER_IMAGE} MB of setup data per request (no pre-warm: each request sets up its own session)` +
-    (abandon ? ` · cancelled before sending: ${formatSats(abandon)}` : "");
+    ` · about ${SETUP_MB_PER_IMAGE} MB of setup data on a new connection (on HTTP/2 an image reuses the chat's open connection)` +
+    (abandon ? ` · cancelled before sending: the deposit or ${formatSats(abandon)}` : "");
 }
 
 function setMode(m: "chat" | "image"): void {
@@ -1993,24 +2178,24 @@ function meteredOk(): boolean {
   if (!metered || load(K.meteredWarned, false)) return true;
   save(K.meteredWarned, true);
   return confirm(
-    `Each confidential image request moves about ${SETUP_MB_PER_IMAGE} MB of setup data (the two-party handshake and the proofs) before the image itself. Continue on this connection?`,
+    `A confidential image request on a new connection moves about ${SETUP_MB_PER_IMAGE} MB of setup data (the two-party handshake and the proofs) before the image itself. Continue on this network?`,
   );
 }
 
 const IMAGE_STAGES: Record<string, string> = {
-  request: "starting a confidential session…",
-  ready: "secure setup: the node checked the key and reserved the price…",
-  twopc_key_share: "secure setup done (2PC key share); TLS handshake with the provider…",
-  hs_verified: "provider certificate and handshake verified; proving the node's key record…",
-  pi_nk_ok: "node's key record proven; writing the request…",
-  head_written: "request head written; sending the encrypted prompt…",
-  body_sent: "request sent; waiting for the provider…",
-  pi_c2s_ok: "pinned price parameters proven; waiting for the image…",
+  request: "starting the confidential request…",
+  ready: "secure setup: the node checked the key and reserved the connection deposit…",
+  armed: "secure setup done (2PC preparation and key share); TLS handshake with the provider…",
+  certificate_verified: "provider certificate verified; proving the node's key record…",
+  open: "connection open; sending the encrypted prompt…",
+  request_sent: "request sent; proving its records (π_WIN)…",
+  body_sent: "request sent; proving the pinned price parameters (π_WIN)…",
+  pi_win_ok: "pinned price parameters proven; waiting for the image…",
   attestation: "verifying the response and the node's attestation…",
 };
 
 function imageProgressEvent(e: Record<string, unknown>): void {
-  if (e.ev === "body_sent") imageBodySent = true;
+  if (e.ev === "pi_win_ok") imageBodySent = true;
   if (!imageProgress) return;
   if (e.ev === "response_progress" && typeof e.bytes === "number") {
     imageProgress.textContent = `downloading the image (${(e.bytes / 1e6).toFixed(1)} MB)…`;
@@ -2109,7 +2294,7 @@ async function onSendImage(): Promise<void> {
     } else {
       const msg =
         err instanceof UpstreamImageError
-          ? `The provider refused the request (HTTP ${err.status}). The receipt verified; a rejected request costs the node's abandon fee (a 429 or 503 its session fee).`
+          ? `The provider refused the request (HTTP ${err.status}). The receipt verified; a rejected request costs the node's abandon fee (a 429 or 503 the session fee, if still due on the connection).`
           : friendlyError(err);
       testHook().errors.push(msg);
       card.classList.add("error");
@@ -2157,6 +2342,8 @@ async function restart(): Promise<void> {
   }
   offer = undefined;
   offerError = undefined;
+  outdatedNode = undefined;
+  nextFraming = undefined;
   pricing = [];
   makeClient();
   renderStatus();
@@ -2176,7 +2363,12 @@ async function restart(): Promise<void> {
     });
   } catch (e) {
     offerError = e instanceof Error ? e.message : String(e);
+    if (e instanceof NodeProtocolOutdatedError) {
+      outdatedNode = e.nodeVersion;
+      offerError = friendlyError(e);
+    }
   }
+  void updateFraming();
   renderStatus();
   renderSide();
   await refreshBalance();
