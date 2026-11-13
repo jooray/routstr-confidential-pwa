@@ -1,7 +1,7 @@
 {
   "name": "routstr-confidential-pwa",
   "private": true,
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Confidential chat PWA for routstr nodes (confidential mode v3, verified in the browser)",
   "license": "MIT",
   "type": "module",
@@ -13,7 +13,7 @@
     "test:e2e": "node scripts/e2e-prod.mjs smoke"
   },
   "dependencies": {
-    "@routstr/confidential-web": "github:jooray/routstr-confidential-web#7c1b4d72ce6f67ac9f877621a6fc816f09d809d0",
+    "@routstr/confidential-web": "github:jooray/routstr-confidential-web#601cc848ff1f8e9a5c2ac6d56dbb8c2c1ce38e5b",
     "dompurify": "^3.4.16",
     "markdown-it": "^14.3.2",
     "qrcode-generator": "1.4.4"
