@@ -710,9 +710,9 @@ on a row. Details, evidence and the image analysis for OpenRouter:
 <tbody>
 <tr><td><a href="#prov-venice">Venice</a><span class="sub">reference</span></td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td><td class="idle">400 s</td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td></tr>
 <tr><td><a href="#prov-numes">Numes</a></td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td><td class="idle">600 s</td><td class="ok">✓</td><td class="na">?</td><td class="ok">✓</td><td class="ok">✓</td></tr>
-<tr><td><a href="#prov-xkiro">xKiro</a></td><td class="ok">✓<small>pin price fields</small></td><td class="ok">✓<small>error text not checked</small></td><td class="ok">✓<small>unknown fields accepted</small></td><td class="idle">400 s</td><td class="ok">✓</td><td class="na">?</td><td class="ok">✓</td><td class="ok">✓</td></tr>
-<tr><td><a href="#prov-openrouter">OpenRouter</a></td><td class="ok">✓<small>pin price fields</small></td><td class="ok">✓<small>error text not checked</small></td><td class="ok">✓</td><td class="idle">400 s</td><td class="ok">✓</td><td class="no">✗<small>only via chat</small></td><td class="ok">✓</td><td class="ok">✓</td></tr>
-<tr><td><a href="#prov-cloudflare">Cloudflare Workers AI</a></td><td class="ok">✓<small>pin price fields</small></td><td class="ok">✓<small>error text not checked</small></td><td class="ok">✓<small>unknown fields accepted</small></td><td class="idle">400 s</td><td class="ok">✓</td><td class="na">?</td><td class="ok">✓</td><td class="ok">✓</td></tr>
+<tr><td><a href="#prov-xkiro">xKiro</a></td><td class="ok">✓<small>pin price fields</small></td><td class="ok">✓<small><a href="#prov-keyecho">key-echo check partial</a></small></td><td class="ok">✓<small>unknown fields accepted</small></td><td class="idle">400 s</td><td class="ok">✓</td><td class="na">?</td><td class="ok">✓</td><td class="ok">✓</td></tr>
+<tr><td><a href="#prov-openrouter">OpenRouter</a></td><td class="ok">✓<small>pin price fields</small></td><td class="ok">✓<small><a href="#prov-keyecho">key-echo check partial</a></small></td><td class="ok">✓</td><td class="idle">400 s</td><td class="ok">✓</td><td class="no">✗<small>only via chat</small></td><td class="ok">✓</td><td class="ok">✓</td></tr>
+<tr><td><a href="#prov-cloudflare">Cloudflare Workers AI</a></td><td class="ok">✓<small>pin price fields</small></td><td class="ok">✓<small><a href="#prov-keyecho">key-echo check partial</a></small></td><td class="ok">✓<small>unknown fields accepted</small></td><td class="idle">400 s</td><td class="ok">✓</td><td class="na">?</td><td class="ok">✓</td><td class="ok">✓</td></tr>
 <tr><td><a href="#prov-nvidia">NVIDIA NIM</a></td><td class="no">✗</td><td class="ok">✓</td><td class="no">✗<small>first <code>model</code> wins</small></td><td class="idle">340 s<small>TCP close</small></td><td class="no">✗</td><td class="na">?</td><td class="no">✗<small>decoy runs</small></td><td class="na">–</td></tr>
 <tr><td><a href="#prov-google">Google AI Studio</a></td><td class="no">✗</td><td class="no">✗<small>usage in content</small></td><td class="no">✗<small>usage in content</small></td><td class="idle">240 s</td><td class="no">✗</td><td class="na">?</td><td class="na">–</td><td class="na">–</td></tr>
 <tr><td><a href="#prov-unorouter">UnoRouter</a></td><td class="no">✗</td><td class="no">✗<small>usage not last</small></td><td class="no">✗<small>cap overrun</small></td><td class="na idle">?</td><td class="no">✗</td><td class="na">?</td><td class="na">–</td><td class="na">–</td></tr>
@@ -724,7 +724,7 @@ on a row. Details, evidence and the image analysis for OpenRouter:
 <span class="ok">✓</span> works, <span class="no">✗</span> does not, <span class="na">?</span> not tested or not
 available, <span class="na">–</span> not run or not applicable. "Pin price fields": the provider honours request
 fields the protocol does not fix, so the operator pins the price-changing ones off in the offer
-(<a href="#prov-pin">what that means</a>). "Idle HTTP/2 kept for" is how long the provider keeps a silent HTTP/2
+(<a href="#prov-pin">what that means</a>). "Key-echo check partial": one of the checks that the provider never sends the node's API key back could not run (<a href="#prov-keyecho">what that means</a>). "Idle HTTP/2 kept for" is how long the provider keeps a silent HTTP/2
 connection open before it closes it (with GOAWAY unless noted); the <code>idle_secs</code> to offer is in each
 provider's notes. "End to end" means our sidecar and the reference driver (receipts signed by the sidecar).
 "Through a node" means a scratch routstr-core node: its signed offer, its receipts, and the money of every case
@@ -741,6 +741,29 @@ rates. The operator therefore lists such fields in the offer's <code>chat.fixed_
 (<code>false</code>, <code>"off"</code>, <code>[]</code>, or an object whose members are all off). The suffix comes
 last and the provider keeps the last value of a duplicate key, so the pin wins. This is a setting of the sidecar's
 offer file, not a protocol change. Which fields need it is to verify per provider.
+</p>
+</div>
+
+<div class="prov" id="prov-keyecho">
+<h4>What "key-echo check partial" means</h4>
+<p>
+The client decrypts every response the provider sends. If the provider ever copied the node's API key into a
+response, for example an error that quotes the request's headers or says "invalid key sk-…", the client would
+learn the key. Before framing "2" is offered, the HTTP/2 check (item H7 of <code>provider-profile-check.py</code>)
+sends one request of each kind and searches every response, headers and body, for the key:
+</p>
+<ul>
+<li>the probe GET that carries the key into the connection;</li>
+<li>a normal chat request (200);</li>
+<li>a chat request without the key (401);</li>
+<li>a chat request naming a model that does not exist (400 or 404);</li>
+<li>a chat request with an unknown field, which should be refused (400).</li>
+</ul>
+<p>
+xKiro, OpenRouter and Cloudflare accept any field and answer the last request with a 200, so that error
+response never exists and could not be searched. Every response that was read, including both errors, was
+clean. Only an error triggered by a bad request field remains unchecked. To close it, the check needs a field the
+provider does refuse, as with Numes, where a bad <code>service_tier</code> stands in for the unknown field.
 </p>
 </div>
 
@@ -776,7 +799,7 @@ offer file, not a protocol change. Which fields need it is to verify per provide
 <dt>Endpoint</dt><dd><code>api.xkiro.com/v1</code> (FreeLLMAPI key)</dd>
 <dt>Model</dt><dd>Node: <code>mistral-small-2603</code> → <code>mistralai/mistral-small-2603</code>. The node prices 44 of xKiro's 69 models; <code>ministral-3b</code> is not among them, so the sidecar-level model could not be used.</dd>
 <dt>HTTP/1.1</dt><dd>The profile holds (A1, A2, A5, A6, A7, A9, A11, A12), but unknown fields (A4) and price fields (A10) are accepted silently; even <code>"temperature":"hot"</code> is a 200.</dd>
-<dt>HTTP/2</dt><dd>Passes (H1-H6, H8) at 390 s. The check that no error response carries the key (H7) is incomplete: the 401 and 404 responses carry none, but no request field gets a 4xx, so there is no field error to read.</dd>
+<dt>HTTP/2</dt><dd>Passes (H1-H6, H8) at 390 s. The check that no response carries the key (H7) is partial (<a href="#prov-keyecho">what that means</a>): the 401 and 404 responses carry none, but no request field gets a 4xx, so there is no field error to read.</dd>
 <dt>Idle, keepalive</dt><dd>400 s, GOAWAY. A PING every 120 s holds it 15 min. Suggested <code>idle_secs</code>: 390.</dd>
 <dt>Pin</dt><dd>The same rule as OpenRouter (<a href="#prov-pin">what pin means</a>). Since xKiro accepts any field without complaint, which ones it honours is to verify per field before a paid account is offered.</dd>
 <dt>Images</dt><dd>? no image models.</dd>
@@ -790,7 +813,7 @@ offer file, not a protocol change. Which fields need it is to verify per provide
 <dt>Endpoint</dt><dd><code>openrouter.ai/api/v1</code> (FreeLLMAPI key, account with credit)</dd>
 <dt>Model</dt><dd>Sidecar: <code>liquid/lfm-2.5-2.6b:free</code>. Node: routstr's OpenRouter catalogue drops <code>:free</code> ids, so a node offers paid models only; tested with <code>mistral-nemo</code> → <code>mistralai/mistral-nemo</code> ($0.00000024 a request).</dd>
 <dt>HTTP/1.1</dt><dd>The profile holds (A1, A2, A9, A11). The usage event (A7) passes under the §5.4 rule: one choice with an empty delta, <code>finish_reason</code>, <code>native_finish_reason</code> (it failed before the fix). The SSE framing (A12) passes on the re-run: the <code>: OPENROUTER PROCESSING</code> comment lines come first and are no part of the usage tail. Unknown fields are accepted (A4).</dd>
-<dt>HTTP/2</dt><dd>Passes (H1-H6, H8) at 390 s. The error-text check (H7) is incomplete: an unknown field is accepted.</dd>
+<dt>HTTP/2</dt><dd>Passes (H1-H6, H8) at 390 s. The check that no response carries the key (H7) is partial (<a href="#prov-keyecho">what that means</a>): an unknown field is accepted, so there is no field error to read; the 401 and 400 responses carry no key.</dd>
 <dt>Idle, keepalive</dt><dd>400 s, GOAWAY. A PING every 120 s holds it 15 min. Suggested <code>idle_secs</code>: 390.</dd>
 <dt>Pin</dt><dd>Verified live on 2026-11-13 (<a href="https://github.com/jooray/routstr-confidential/blob/main/docs/providers/OPENROUTER.md">docs/providers/OPENROUTER.md</a>). The suggested offer <code>crypto/relay/offer.openrouter.json</code> pins <code>plugins</code>, <code>models</code>, <code>tools</code>, <code>provider</code>, <code>preset</code>, <code>web_search_options</code> and <code>service_tier</code> off, and the node leaves out models with non-text output, tiered prices, 1-hour cache writes, audio input and native web search. With that, every price attack tested cost OpenRouter no more than the node charged. Two gaps remain: a PDF in the request triggers paid OCR that no allowed pin switches off, and OpenRouter may route an honest request to a provider 2-7x dearer than the listed rate. Both need an account setting or a wider pin policy before OpenRouter is offered. Pinning <code>tools</code> off also removes function calling.</dd>
 <dt>Images</dt><dd>✗ images come through chat (<code>modalities</code>); not supported (see docs/PROVIDERS.md).</dd>
@@ -804,7 +827,7 @@ offer file, not a protocol change. Which fields need it is to verify per provide
 <dt>Endpoint</dt><dd><code>api.cloudflare.com/client/v4/accounts/&lt;account&gt;/ai/v1</code> (FreeLLMAPI key)</dd>
 <dt>Model</dt><dd>Free tier <code>@cf/meta/llama-3.2-1b-instruct</code>; the node offers it as <code>meta/llama-3.2-1b-instruct</code> (pinned as <code>@cf/meta/llama-3.2-1b-instruct</code> via <code>upstream_models</code>).</dd>
 <dt>HTTP/1.1</dt><dd>The profile holds (A1, A2, A5, A6, A9, A11, A12). The usage event (A7) passes under the §5.4 rule: the usage is on every chunk and the last one has an empty <code>delta</code> and a <code>finish_reason</code>; only the last event is disclosed (it failed before the fix). Unknown fields (A4) and price fields (A10) are accepted.</dd>
-<dt>HTTP/2</dt><dd>Passes (H1-H6, H8) at 390 s, measured with the probe <code>/client/v4/user/tokens/verify</code>. The clients accept only an API base plus <code>/models</code> as the probe, so the end-to-end offer uses <code>…/accounts/&lt;account&gt;/ai/v1/models</code>: a 405 without the key in it, and its answer is discarded (the probe only carries the credential into the HPACK table).</dd>
+<dt>HTTP/2</dt><dd>Passes (H1-H6, H8) at 390 s, measured with the probe <code>/client/v4/user/tokens/verify</code>. The check that no response carries the key (H7) is partial (<a href="#prov-keyecho">what that means</a>): an unknown field is accepted; the 401 and 400 responses carry no key. The clients accept only an API base plus <code>/models</code> as the probe, so the end-to-end offer uses <code>…/accounts/&lt;account&gt;/ai/v1/models</code>: a 405 without the key in it, and its answer is discarded (the probe only carries the credential into the HPACK table).</dd>
 <dt>Idle, keepalive</dt><dd>400 s, GOAWAY. A PING every 120 s holds it 15 min. Suggested <code>idle_secs</code>: 390.</dd>
 <dt>Images</dt><dd>? image models only on <code>/ai/run/@cf/...</code>; <code>/ai/v1/images/generations</code> answers "No route for that URI".</dd>
 <dt>End to end</dt><dd>Sidecar (2026-11-13, 17/17): one request on each framing, three on one HTTP/2 connection, two HTTP/1.1 connections, a 200 kB body on both, a second request after 60 s idle, armed connections on both, a refused request then the good one on both, the decoy on both (the provider ran and reported the pinned model), the suffix and model-swap attacks refused on both. Node (8/8): chat ✓ on both framings, three on one connection, two HTTP/1.1 connections, the decoy on both, the model swap refused on both; every receipt verified and the money exact.</dd>
