@@ -13,7 +13,7 @@
     "test:e2e": "node scripts/e2e-prod.mjs smoke"
   },
   "dependencies": {
-    "@routstr/confidential-web": "github:jooray/routstr-confidential-web#601cc848ff1f8e9a5c2ac6d56dbb8c2c1ce38e5b",
+    "@routstr/confidential-web": "git+https://github.com/jooray/routstr-confidential-web.git#601cc848ff1f8e9a5c2ac6d56dbb8c2c1ce38e5b",
     "dompurify": "^3.4.16",
     "markdown-it": "^14.3.2",
     "qrcode-generator": "1.4.4"
