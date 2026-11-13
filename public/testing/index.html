@@ -91,15 +91,25 @@ td code { overflow-wrap: normal; white-space: nowrap; }
 .back { font-size: 0.94em; }
 kbd { font: 0.85em ui-monospace, Menlo, monospace; border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; background: var(--card); }
 /* Providers: summary table and per-provider notes */
-table.prov-sum { font-size: 0.9em; }
-.prov-sum th, .prov-sum td { text-align: center; vertical-align: middle; white-space: nowrap; padding: 6px 7px; }
-.prov-sum thead th { white-space: normal; line-height: 1.3; font-size: 0.92em; }
-.prov-sum th:first-child, .prov-sum td:first-child { text-align: left; }
-@media (max-width: 700px) { .prov-sum td:first-child { white-space: normal; min-width: 7em; } }
-.prov-sum tbody td { background: var(--card); }
+.prov-wrap { overflow-x: auto; max-width: 100%; margin: 1em 0; border: 1px solid var(--border); border-radius: 6px; }
+table.prov-sum { table-layout: fixed; width: 100%; min-width: 760px; font-size: 0.86em; border-collapse: separate; border-spacing: 0; }
+.prov-sum col.c-prov { width: 17%; }
+.prov-sum col.c-idle { width: 10%; }
+.prov-sum th, .prov-sum td { border: 0; border-bottom: 1px solid var(--border); border-left: 1px solid var(--border); text-align: center; vertical-align: middle; padding: 7px 5px; line-height: 1.3; }
+.prov-sum tr > :first-child { border-left: 0; text-align: left; padding-left: 10px; }
+.prov-sum tbody tr:last-child td { border-bottom: 0; }
+.prov-sum thead th { background: var(--code-bg); font-size: 0.92em; font-weight: 700; border-bottom: 2px solid var(--border); vertical-align: bottom; }
+.prov-sum tbody td { background: var(--card); font-size: 1.05em; }
 .prov-sum tbody tr:nth-child(even) td { background: var(--zebra); }
-.prov-sum tbody td:first-child { position: sticky; left: 0; z-index: 1; }
-.prov-sum thead th:first-child { position: sticky; left: 0; z-index: 2; }
+.prov-sum tbody td:first-child { font-weight: 700; font-size: 1em; }
+.prov-sum tbody td:first-child a { color: var(--fg); text-decoration-color: var(--border); }
+.prov-sum tbody td:first-child .sub { display: block; font-weight: 400; font-size: 0.82em; color: var(--muted); }
+.prov-sum td small { display: block; font-size: 0.74em; font-weight: 400; color: var(--muted); line-height: 1.25; margin-top: 2px; }
+.prov-sum td small code { font-size: 0.95em; padding: 0 0.2em; white-space: normal; }
+.prov-sum td.idle { font-size: 0.92em; }
+.prov-sum tbody td:first-child, .prov-sum thead th:first-child { position: sticky; left: 0; z-index: 1; }
+.prov-sum thead th:first-child { z-index: 2; }
+@media (max-width: 700px) { .prov-sum tbody td:first-child, .prov-sum thead th:first-child { box-shadow: 1px 0 0 var(--border); } }
 .ok { color: var(--accent); font-weight: 600; }
 .no { color: var(--bad); font-weight: 600; }
 .part { color: var(--part); font-weight: 600; }
@@ -688,45 +698,58 @@ See "Upgrading from v2" in
 <h3 id="providers">7. Providers</h3>
 <p>
 Which upstream providers work with protocol v3, measured on 2026-11-12 with free models only (Venice: the
-earlier reference measurement). Results change when providers change their front ends: re-run before you rely
+earlier reference measurement; Cloudflare and OpenCode Zen end to end on 2026-11-13). Results change when providers change their front ends: re-run before you rely
 on a row. Details, evidence and the image analysis for OpenRouter:
 <a href="https://github.com/jooray/routstr-confidential/blob/main/docs/PROVIDERS.md">docs/PROVIDERS.md</a>.
 </p>
-<div class="table-wrap"><table class="prov-sum">
+<div class="prov-wrap"><table class="prov-sum">
+<colgroup><col class="c-prov"><col><col><col><col class="c-idle"><col><col><col><col></colgroup>
 <thead>
-<tr><th>Provider</th><th>Works (chat)</th><th>HTTP/2</th><th>HTTP/1.1</th><th>Idle close → <code>idle_secs</code></th><th>Chat</th><th>Images</th><th>End to end (sidecar)</th><th>Through a node</th></tr>
+<tr><th>Provider</th><th>Works (chat)</th><th>HTTP/2</th><th>HTTP/1.1</th><th>Idle HTTP/2 kept for</th><th>Chat</th><th>Images</th><th>End to end (sidecar)</th><th>Through a node</th></tr>
 </thead>
 <tbody>
-<tr><td><a href="#prov-venice">Venice</a> (reference)</td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td><td>400 s → 390</td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td></tr>
-<tr><td><a href="#prov-numes">Numes</a></td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td><td>600 s → 590</td><td class="ok">✓</td><td class="na">?</td><td class="ok">✓</td><td class="ok">✓</td></tr>
-<tr><td><a href="#prov-xkiro">xKiro</a></td><td class="ok">✓ <span class="part">pin</span></td><td class="ok">✓ <span class="na">H7 ?</span></td><td class="part">✓ A4, A10 ✗</td><td>400 s → 390</td><td class="ok">✓</td><td class="na">?</td><td class="ok">✓</td><td class="ok">✓</td></tr>
-<tr><td><a href="#prov-openrouter">OpenRouter</a></td><td class="ok">✓ <span class="part">pin</span></td><td class="ok">✓ <span class="na">H7 ?</span></td><td class="ok">✓</td><td>400 s → 390</td><td class="ok">✓</td><td class="no">✗</td><td class="ok">✓</td><td class="ok">✓</td></tr>
-<tr><td><a href="#prov-nvidia">NVIDIA NIM</a></td><td class="no">✗</td><td class="ok">✓</td><td class="no">✗ A2</td><td>340 s → 330</td><td class="no">✗</td><td class="na">?</td><td class="no">✗ decoy</td><td class="na">–</td></tr>
-<tr><td><a href="#prov-google">Google AI Studio</a></td><td class="no">✗</td><td class="no">✗ H5, H8</td><td class="no">✗ A7</td><td>240 s → 230</td><td class="no">✗</td><td class="na">?</td><td class="na">–</td><td class="na">–</td></tr>
-<tr><td><a href="#prov-cloudflare">Cloudflare Workers AI</a></td><td class="part">partial</td><td class="ok">✓ <span class="na">H7 ?</span></td><td class="ok">✓</td><td>400 s → 390</td><td class="na">?</td><td class="na">?</td><td class="na">–</td><td class="na">–</td></tr>
-<tr><td><a href="#prov-unorouter">UnoRouter</a></td><td class="no">✗</td><td class="no">✗ H8</td><td class="no">✗ A6</td><td class="na">?</td><td class="no">✗</td><td class="na">?</td><td class="na">–</td><td class="na">–</td></tr>
-<tr><td><a href="#prov-opencode-go">OpenCode Go</a></td><td class="no">✗</td><td class="no">✗ no h2</td><td class="no">✗ header</td><td class="na">–</td><td class="no">✗</td><td class="na">?</td><td class="na">–</td><td class="na">–</td></tr>
-<tr><td><a href="#prov-opencode-zen">OpenCode Zen</a></td><td class="na">? untested</td><td class="no">✗ no h2</td><td class="na">? 429</td><td class="na">–</td><td class="na">?</td><td class="na">?</td><td class="na">–</td><td class="na">–</td></tr>
+<tr><td><a href="#prov-venice">Venice</a><span class="sub">reference</span></td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td><td class="idle">400 s</td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td></tr>
+<tr><td><a href="#prov-numes">Numes</a></td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td><td class="idle">600 s</td><td class="ok">✓</td><td class="na">?</td><td class="ok">✓</td><td class="ok">✓</td></tr>
+<tr><td><a href="#prov-xkiro">xKiro</a></td><td class="ok">✓<small>pin price fields</small></td><td class="ok">✓<small>error text not checked</small></td><td class="ok">✓<small>unknown fields accepted</small></td><td class="idle">400 s</td><td class="ok">✓</td><td class="na">?</td><td class="ok">✓</td><td class="ok">✓</td></tr>
+<tr><td><a href="#prov-openrouter">OpenRouter</a></td><td class="ok">✓<small>pin price fields</small></td><td class="ok">✓<small>error text not checked</small></td><td class="ok">✓</td><td class="idle">400 s</td><td class="ok">✓</td><td class="no">✗<small>only via chat</small></td><td class="ok">✓</td><td class="ok">✓</td></tr>
+<tr><td><a href="#prov-cloudflare">Cloudflare Workers AI</a></td><td class="ok">✓<small>pin price fields</small></td><td class="ok">✓<small>error text not checked</small></td><td class="ok">✓<small>unknown fields accepted</small></td><td class="idle">400 s</td><td class="ok">✓</td><td class="na">?</td><td class="ok">✓</td><td class="ok">✓</td></tr>
+<tr><td><a href="#prov-nvidia">NVIDIA NIM</a></td><td class="no">✗</td><td class="ok">✓</td><td class="no">✗<small>first <code>model</code> wins</small></td><td class="idle">340 s<small>TCP close</small></td><td class="no">✗</td><td class="na">?</td><td class="no">✗<small>decoy runs</small></td><td class="na">–</td></tr>
+<tr><td><a href="#prov-google">Google AI Studio</a></td><td class="no">✗</td><td class="no">✗<small>usage in content</small></td><td class="no">✗<small>usage in content</small></td><td class="idle">240 s</td><td class="no">✗</td><td class="na">?</td><td class="na">–</td><td class="na">–</td></tr>
+<tr><td><a href="#prov-unorouter">UnoRouter</a></td><td class="no">✗</td><td class="no">✗<small>usage not last</small></td><td class="no">✗<small>cap overrun</small></td><td class="na idle">?</td><td class="no">✗</td><td class="na">?</td><td class="na">–</td><td class="na">–</td></tr>
+<tr><td><a href="#prov-opencode-go">OpenCode Go</a></td><td class="no">✗</td><td class="no">✗<small>no HTTP/2</small></td><td class="no">✗<small>needs extra header</small></td><td class="na idle">–</td><td class="no">✗</td><td class="na">?</td><td class="na">–</td><td class="na">–</td></tr>
+<tr><td><a href="#prov-opencode-zen">OpenCode Zen</a></td><td class="na">?<small>free quota never served</small></td><td class="no">✗<small>no HTTP/2</small></td><td class="na">?<small>429 on every chat</small></td><td class="na idle">–</td><td class="na">?</td><td class="na">?</td><td class="na">?<small>only 429s</small></td><td class="na">–</td></tr>
 </tbody>
 </table></div>
 <p class="note">
-<span class="ok">✓</span> works, <span class="no">✗</span> does not, <span class="part">partial</span> profile holds but not
-run end to end, <span class="na">?</span> not tested or not available, <span class="na">–</span> not run or not
-applicable. A1-A13 are the HTTP/1.1 profile items and H1-H8 the HTTP/2 items of
-<code>provider-profile-check.py</code>. <span class="part">pin</span>: the provider accepts unknown fields, so on a
-paid account its price-changing fields must be pinned off in the offer's <code>chat</code> block. "Idle close" is
-when the provider closes a silent HTTP/2 connection; <code>idle_secs</code> is the value to offer. "End to end" means
-our sidecar and the reference driver (receipts signed by the sidecar). "Through a node" means a scratch routstr-core
-node: its signed offer, its receipts, and the money of every case checked in its database. The reasons behind each
-mark are below.
+<span class="ok">✓</span> works, <span class="no">✗</span> does not, <span class="na">?</span> not tested or not
+available, <span class="na">–</span> not run or not applicable. "Pin price fields": the provider honours request
+fields the protocol does not fix, so the operator pins the price-changing ones off in the offer
+(<a href="#prov-pin">what that means</a>). "Idle HTTP/2 kept for" is how long the provider keeps a silent HTTP/2
+connection open before it closes it (with GOAWAY unless noted); the <code>idle_secs</code> to offer is in each
+provider's notes. "End to end" means our sidecar and the reference driver (receipts signed by the sidecar).
+"Through a node" means a scratch routstr-core node: its signed offer, its receipts, and the money of every case
+checked in its database. The reasons behind each mark are below.
 </p>
+
+<div class="prov" id="prov-pin">
+<h4>What "pin price fields" means</h4>
+<p>
+The client's part of the request body is private: the node never sees it, and the provider reads it before the
+pinned suffix. A field the provider honours there that changes the price without changing the pinned model, the
+caps or the usage token counts is a loss for the node, because the node bills the reported tokens at the offer's
+rates. The operator therefore lists such fields in the offer's <code>chat.fixed_pins</code> with an "off" value
+(<code>false</code>, <code>"off"</code>, <code>[]</code>, or an object whose members are all off). The suffix comes
+last and the provider keeps the last value of a duplicate key, so the pin wins. This is a setting of the sidecar's
+offer file, not a protocol change. Which fields need it is to verify per provider.
+</p>
+</div>
 
 <div class="prov" id="prov-venice">
 <h4>Venice (reference) <span class="verdict ok">✓ works</span></h4>
 <dl>
 <dt>Endpoint</dt><dd><code>api.venice.ai/api/v1</code>, the deployed provider. Its model ids carry no <code>org/</code> prefix, so its offer has no <code>upstream_models</code> and is unchanged.</dd>
-<dt>Profile</dt><dd>HTTP/1.1 ✓ A1-A13. HTTP/2 ✓ H1-H8.</dd>
-<dt>Idle, keepalive</dt><dd>A silent HTTP/2 connection closes after 400 s with GOAWAY. A PING or an empty SETTINGS every 2-5 min holds it 16+ min. <code>idle_secs</code> 390 (production).</dd>
+<dt>Profile</dt><dd>Every HTTP/1.1 item (A1-A13) and every HTTP/2 item (H1-H8) passes.</dd>
+<dt>Idle, keepalive</dt><dd>A silent HTTP/2 connection closes after 400 s with GOAWAY. A PING or an empty SETTINGS every 2-5 min holds it 16+ min. Suggested <code>idle_secs</code>: 390 (production).</dd>
 <dt>Images</dt><dd>✓ native <code>/api/v1/image/generate</code>.</dd>
 <dt>End to end</dt><dd>Sidecar (v3 gates, production): chat ✓ on HTTP/2 and HTTP/1.1, a follow-up on a kept connection ✓, an image ✓, chat and an image on one connection ✓.</dd>
 <dt>Through a node</dt><dd>Chat ✓ on both framings, follow-up ✓, every receipt and the money exact: <code>v3-node-check.sh</code> 63/63 with the new decoy cases, routstrd 11/11.</dd>
@@ -738,9 +761,9 @@ mark are below.
 <dl>
 <dt>Endpoint</dt><dd><code>api.numes.ai/api/v1</code></dd>
 <dt>Model</dt><dd>Free <code>moonshotai/kimi-k3.1-pro</code>, offered by the node as <code>kimi-k3.1-pro</code> (15 models in the node's offer, all via <code>upstream_models</code>).</dd>
-<dt>HTTP/1.1</dt><dd>✓ A1, A2, A5, A6, A7, A9, A11, A12. A4: an unknown field gets a 502 (passed on and refused upstream, not ignored). A10: <code>service_tier</code> and <code>web_search_options</code> get a 400, <code>prediction</code> is accepted.</dd>
-<dt>HTTP/2</dt><dd>✓ H1-H8 at 590 s. The error-path probe uses a bad <code>service_tier</code>, since an unknown field is a 502.</dd>
-<dt>Idle, keepalive</dt><dd>600 s, GOAWAY. PINGs do not reset it; a request every 200 s keeps it (an idle limit, not an age limit). <code>idle_secs</code> 590.</dd>
+<dt>HTTP/1.1</dt><dd>The profile holds (A1, A2, A5, A6, A7, A9, A11, A12). An unknown field gets a 502: passed on and refused upstream, not ignored (A4). Of the price fields, <code>service_tier</code> and <code>web_search_options</code> get a 400, <code>prediction</code> is accepted (A10).</dd>
+<dt>HTTP/2</dt><dd>Every item passes (H1-H8) at 590 s. The error-path probe (H7) uses a bad <code>service_tier</code>, since an unknown field is a 502.</dd>
+<dt>Idle, keepalive</dt><dd>600 s, GOAWAY. PINGs do not reset it; a request every 200 s keeps it (an idle limit, not an age limit). Suggested <code>idle_secs</code>: 590.</dd>
 <dt>Images</dt><dd>? no image models.</dd>
 <dt>End to end</dt><dd>Sidecar: chat ✓ on both framings, three requests on one connection and a request after 60 s idle ✓. Node: chat ✓ on both framings, three on one connection ✓, money exact; the decoy ran the pinned model and the model swap was refused on both framings.</dd>
 <dt>Watch</dt><dd>Slow at times (time to first token up to 69 s): one <code>h2-three</code> run hit the 180 s case limit and passed with 600 s.</dd>
@@ -748,29 +771,45 @@ mark are below.
 </div>
 
 <div class="prov" id="prov-xkiro">
-<h4>xKiro <span class="verdict ok">✓ works</span> <span class="verdict part">pin price fields on a paid account</span></h4>
+<h4>xKiro <span class="verdict ok">✓ works</span> <span class="verdict part">pin price fields</span></h4>
 <dl>
 <dt>Endpoint</dt><dd><code>api.xkiro.com/v1</code> (FreeLLMAPI key)</dd>
 <dt>Model</dt><dd>Node: <code>mistral-small-2603</code> → <code>mistralai/mistral-small-2603</code>. The node prices 44 of xKiro's 69 models; <code>ministral-3b</code> is not among them, so the sidecar-level model could not be used.</dd>
-<dt>HTTP/1.1</dt><dd>✓ A1, A2, A5, A6, A7, A9, A11, A12. ✗ A4, A10: unknown and price fields are accepted silently.</dd>
-<dt>HTTP/2</dt><dd>✓ H1-H6, H8 at 390 s. H7 ?: the 401 and 404 responses carry no key, but no request field gets a 4xx (even <code>"temperature":"hot"</code> is a 200), so there is no field error to read.</dd>
-<dt>Idle, keepalive</dt><dd>400 s, GOAWAY. A PING every 120 s holds it 15 min. <code>idle_secs</code> 390.</dd>
+<dt>HTTP/1.1</dt><dd>The profile holds (A1, A2, A5, A6, A7, A9, A11, A12), but unknown fields (A4) and price fields (A10) are accepted silently; even <code>"temperature":"hot"</code> is a 200.</dd>
+<dt>HTTP/2</dt><dd>Passes (H1-H6, H8) at 390 s. The check that no error response carries the key (H7) is incomplete: the 401 and 404 responses carry none, but no request field gets a 4xx, so there is no field error to read.</dd>
+<dt>Idle, keepalive</dt><dd>400 s, GOAWAY. A PING every 120 s holds it 15 min. Suggested <code>idle_secs</code>: 390.</dd>
+<dt>Pin</dt><dd>The same rule as OpenRouter (<a href="#prov-pin">what pin means</a>). Since xKiro accepts any field without complaint, which ones it honours is to verify per field before a paid account is offered.</dd>
 <dt>Images</dt><dd>? no image models.</dd>
 <dt>End to end</dt><dd>Sidecar: chat ✓ on both framings, three on one connection and after 60 s idle ✓. Node: chat ✓ on both framings, three on one connection ✓, money exact, decoy and model swap as Numes. Also through routstrd (gate 10/10, five on one connection) and the SDK gate (20 requests, all cases).</dd>
 </dl>
 </div>
 
 <div class="prov" id="prov-openrouter">
-<h4>OpenRouter <span class="verdict ok">✓ chat</span> <span class="verdict no">✗ images</span></h4>
+<h4>OpenRouter <span class="verdict ok">✓ chat</span> <span class="verdict part">pin price fields</span> <span class="verdict no">✗ images</span></h4>
 <dl>
 <dt>Endpoint</dt><dd><code>openrouter.ai/api/v1</code> (FreeLLMAPI key, account with credit)</dd>
 <dt>Model</dt><dd>Sidecar: <code>liquid/lfm-2.5-2.6b:free</code>. Node: routstr's OpenRouter catalogue drops <code>:free</code> ids, so a node offers paid models only; tested with <code>mistral-nemo</code> → <code>mistralai/mistral-nemo</code> ($0.00000024 a request).</dd>
-<dt>HTTP/1.1</dt><dd>✓ A1, A2, A9, A11. A7 ✓ under the §5.4 rule (one choice with an empty delta, <code>finish_reason</code>, <code>native_finish_reason</code>; it failed before the fix). A12 ✓ on the re-run: the <code>: OPENROUTER PROCESSING</code> comment lines come first and are no part of the usage tail. A4: unknown fields accepted.</dd>
-<dt>HTTP/2</dt><dd>✓ H1-H6, H8 at 390 s. H7 incomplete: an unknown field is accepted.</dd>
-<dt>Idle, keepalive</dt><dd>400 s, GOAWAY. A PING every 120 s holds it 15 min. <code>idle_secs</code> 390.</dd>
+<dt>HTTP/1.1</dt><dd>The profile holds (A1, A2, A9, A11). The usage event (A7) passes under the §5.4 rule: one choice with an empty delta, <code>finish_reason</code>, <code>native_finish_reason</code> (it failed before the fix). The SSE framing (A12) passes on the re-run: the <code>: OPENROUTER PROCESSING</code> comment lines come first and are no part of the usage tail. Unknown fields are accepted (A4).</dd>
+<dt>HTTP/2</dt><dd>Passes (H1-H6, H8) at 390 s. The error-text check (H7) is incomplete: an unknown field is accepted.</dd>
+<dt>Idle, keepalive</dt><dd>400 s, GOAWAY. A PING every 120 s holds it 15 min. Suggested <code>idle_secs</code>: 390.</dd>
+<dt>Pin</dt><dd>To verify per field (<a href="#prov-pin">what pin means</a>): <code>plugins</code> (e.g. paid web search, which is not in the token usage), <code>models</code> (fallback routing to another model), <code>provider</code> (routing preferences), <code>web_search_options</code>, and <code>modalities</code> (image output, billed at the image rate). <code>modalities</code> cannot be pinned under the clients' pin policy (only off values are allowed, so <code>["text"]</code> is refused): the way out is for the node not to offer image-output models for chat.</dd>
 <dt>Images</dt><dd>✗ images come through chat (<code>modalities</code>); not supported (see docs/PROVIDERS.md).</dd>
 <dt>End to end</dt><dd>Sidecar with the <code>:free</code> model: chat ✓ on both framings (one, three on a connection, decoy, model swap), follow-up ✓; image ✗, chat and image on one connection ✗. Node: chat ✓ on both framings, three on one connection ✓, money exact, decoy and model swap as Numes. This account's data policy allows no endpoint of <code>liquid/lfm-2.5-2.6b</code> (a 404, settled as an error head with the abandon fee, exactly).</dd>
-<dt>Pin</dt><dd>On a paid account pin <code>plugins</code>, <code>models</code> and <code>provider</code> off.</dd>
+</dl>
+</div>
+
+<div class="prov" id="prov-cloudflare">
+<h4>Cloudflare Workers AI <span class="verdict ok">✓ works</span> <span class="verdict part">pin price fields; the offer publishes the account id</span></h4>
+<dl>
+<dt>Endpoint</dt><dd><code>api.cloudflare.com/client/v4/accounts/&lt;account&gt;/ai/v1</code> (FreeLLMAPI key)</dd>
+<dt>Model</dt><dd>Free tier <code>@cf/meta/llama-3.2-1b-instruct</code>; the node offers it as <code>meta/llama-3.2-1b-instruct</code> (pinned as <code>@cf/meta/llama-3.2-1b-instruct</code> via <code>upstream_models</code>).</dd>
+<dt>HTTP/1.1</dt><dd>The profile holds (A1, A2, A5, A6, A9, A11, A12). The usage event (A7) passes under the §5.4 rule: the usage is on every chunk and the last one has an empty <code>delta</code> and a <code>finish_reason</code>; only the last event is disclosed (it failed before the fix). Unknown fields (A4) and price fields (A10) are accepted.</dd>
+<dt>HTTP/2</dt><dd>Passes (H1-H6, H8) at 390 s, measured with the probe <code>/client/v4/user/tokens/verify</code>. The clients accept only an API base plus <code>/models</code> as the probe, so the end-to-end offer uses <code>…/accounts/&lt;account&gt;/ai/v1/models</code>: a 405 without the key in it, and its answer is discarded (the probe only carries the credential into the HPACK table).</dd>
+<dt>Idle, keepalive</dt><dd>400 s, GOAWAY. A PING every 120 s holds it 15 min. Suggested <code>idle_secs</code>: 390.</dd>
+<dt>Images</dt><dd>? image models only on <code>/ai/run/@cf/...</code>; <code>/ai/v1/images/generations</code> answers "No route for that URI".</dd>
+<dt>End to end</dt><dd>Sidecar (2026-11-13, 17/17): one request on each framing, three on one HTTP/2 connection, two HTTP/1.1 connections, a 200 kB body on both, a second request after 60 s idle, armed connections on both, a refused request then the good one on both, the decoy on both (the provider ran and reported the pinned model), the suffix and model-swap attacks refused on both. Node (8/8): chat ✓ on both framings, three on one connection, two HTTP/1.1 connections, the decoy on both, the model swap refused on both; every receipt verified and the money exact.</dd>
+<dt>Node setup</dt><dd>Workers AI has no <code>/models</code> listing (405), so the node's <code>generic</code> provider finds no models: the model is added through the node's admin API (<code>POST /admin/api/upstream-providers/{id}/models</code>, priced by hand).</dd>
+<dt>Watch</dt><dd>The account id is in the chat path, so the head template and the probe path of the signed offer publish it. Pin: the same rule as OpenRouter (<a href="#prov-pin">what pin means</a>); which Workers AI fields change the price is to verify.</dd>
 </dl>
 </div>
 
@@ -778,9 +817,9 @@ mark are below.
 <h4>NVIDIA NIM <span class="verdict no">✗ model binding broken</span></h4>
 <dl>
 <dt>Endpoint</dt><dd><code>integrate.api.nvidia.com/v1</code> (FreeLLMAPI key)</dd>
-<dt>HTTP/1.1</dt><dd>✗ A2: the <em>first</em> <code>model</code> key wins (routing), <code>max_tokens</code> the last. So a client can name another model in the private part and be billed at the pinned model's rates; configuration cannot fix it. ✓ A1, A4 (400), A5, A6, A7, A9, A11, A12; A10 accepted.</dd>
-<dt>HTTP/2</dt><dd>✓ H1-H8 at 330 s.</dd>
-<dt>Idle, keepalive</dt><dd>340 s, a TCP close <em>without</em> GOAWAY. A PING every 120 s holds it 15 min. <code>idle_secs</code> 330.</dd>
+<dt>HTTP/1.1</dt><dd>✗ the <em>first</em> <code>model</code> key wins (routing), <code>max_tokens</code> the last (profile item A2). So a client can name another model in the private part and be billed at the pinned model's rates; configuration cannot fix it. The rest holds (A1, A4 with a 400, A5, A6, A7, A9, A11, A12); price fields are accepted (A10).</dd>
+<dt>HTTP/2</dt><dd>Every item passes (H1-H8) at 330 s.</dd>
+<dt>Idle, keepalive</dt><dd>340 s, a TCP close <em>without</em> GOAWAY. A PING every 120 s holds it 15 min. Suggested <code>idle_secs</code>: 330.</dd>
 <dt>Images</dt><dd>? image models are on <code>ai.api.nvidia.com/v1/genai/...</code>, another host and route.</dd>
 <dt>End to end</dt><dd>Sidecar: chat ✓ on both framings and three on one connection ✓, but the decoy ✗ on both framings (the request went to the decoy model and did not finish in 180 s). Node: not run, blocked by the model binding.</dd>
 </dl>
@@ -790,25 +829,12 @@ mark are below.
 <h4>Google AI Studio <span class="verdict no">✗ usage event shape</span></h4>
 <dl>
 <dt>Endpoint</dt><dd><code>generativelanguage.googleapis.com/v1beta/openai</code> (FreeLLMAPI key)</dd>
-<dt>HTTP/1.1</dt><dd>✗ A7: the usage is merged into the last content chunk; disclosing it would disclose output, so it is not supported. A6: <code>max_tokens</code> with <code>max_completion_tokens</code> is a 400 (one cap key only); completion tokens are 0 at <code>finish_reason: length</code> (thinking is not counted). ✓ A1, A2, A4 (400), A5, A9, A11, A12.</dd>
-<dt>HTTP/2</dt><dd>✗ H5 (no key gives a 400, not a 401) and H8 (the usage is not its own event). ✓ H1-H4, H6.</dd>
-<dt>Idle, keepalive</dt><dd>240 s, GOAWAY <code>session_timed_out</code>. PINGs do not reset it; a request every 150 s keeps it. <code>idle_secs</code> 230.</dd>
+<dt>HTTP/1.1</dt><dd>✗ the usage is merged into the last content chunk (A7); disclosing it would disclose output, so it is not supported. Only one cap key is accepted: <code>max_tokens</code> with <code>max_completion_tokens</code> is a 400 (A6); completion tokens are 0 at <code>finish_reason: length</code> (thinking is not counted). The rest holds (A1, A2, A4 with a 400, A5, A9, A11, A12).</dd>
+<dt>HTTP/2</dt><dd>✗ a request without a key gets a 400, not a 401 (H5), and the usage is not its own event (H8). H1-H4 and H6 pass.</dd>
+<dt>Idle, keepalive</dt><dd>240 s, GOAWAY <code>session_timed_out</code>. PINGs do not reset it; a request every 150 s keeps it. Suggested <code>idle_secs</code>: 230.</dd>
 <dt>Images</dt><dd>? no free image model.</dd>
 <dt>End to end</dt><dd>Not run (blocked).</dd>
 <dt>Key</dt><dd>This key has a <code>.</code>, outside the provable alphabet (the sidecar accepts only <code>[A-Za-z0-9_-]</code>, the π_NK alphabet). Classic <code>AIza…</code> keys fit.</dd>
-</dl>
-</div>
-
-<div class="prov" id="prov-cloudflare">
-<h4>Cloudflare Workers AI <span class="verdict part">partial: profile holds, not run end to end</span></h4>
-<dl>
-<dt>Endpoint</dt><dd><code>api.cloudflare.com/client/v4/accounts/&lt;account&gt;/ai/v1</code> (FreeLLMAPI key)</dd>
-<dt>HTTP/1.1</dt><dd>✓ A1, A2, A5, A6, A9, A11, A12. A7 ✓ under the §5.4 rule: the usage is on every chunk and the last one has an empty <code>delta</code> and a <code>finish_reason</code>; only the last event is disclosed (it failed before the fix). A4, A10 accepted.</dd>
-<dt>HTTP/2</dt><dd>✓ H1-H6, H8 at 390 s. <code>/ai/v1/models</code> is a 405, so the probe is <code>/client/v4/user/tokens/verify</code>.</dd>
-<dt>Idle, keepalive</dt><dd>400 s, GOAWAY. A PING every 120 s holds it 15 min. <code>idle_secs</code> 390.</dd>
-<dt>Chat</dt><dd>? the usage shape is accepted now; not run end to end.</dd>
-<dt>Images</dt><dd>? image models only on <code>/ai/run/@cf/...</code>; <code>/ai/v1/images/generations</code> answers "No route for that URI".</dd>
-<dt>Watch</dt><dd>The account id sits in the path, so the signed offer would publish it. A node would need a provider type that lists Workers AI models.</dd>
 </dl>
 </div>
 
@@ -816,8 +842,8 @@ mark are below.
 <h4>UnoRouter <span class="verdict no">✗ cap overrun, usage not last</span></h4>
 <dl>
 <dt>Endpoint</dt><dd><code>api.unorouter.com/v1</code> (FreeLLMAPI key). Free models: 1 request/min per model.</dd>
-<dt>HTTP/1.1</dt><dd>✗ A6: 64 completion tokens at a cap of 20. A2: duplicate keys refused in both orders. A11: an incomplete answer. An intermittent 403 <code>consent_required</code>; <code>: PING</code> comments; the model is reported without <code>:free</code>.</dd>
-<dt>HTTP/2</dt><dd>✗ H8: after 173 s idle the last event before <code>[DONE]</code> was not the usage event (H5 fails with it). ✓ H1-H4, H6.</dd>
+<dt>HTTP/1.1</dt><dd>✗ 64 completion tokens at a cap of 20 (A6). Duplicate keys are refused in both orders (A2); an incomplete answer (A11). An intermittent 403 <code>consent_required</code>; <code>: PING</code> comments; the model is reported without <code>:free</code>.</dd>
+<dt>HTTP/2</dt><dd>✗ after 173 s idle the last event before <code>[DONE]</code> was not the usage event (H8; H5 fails with it). H1-H4 and H6 pass.</dd>
 <dt>Idle, keepalive</dt><dd>? not measured (1 request/min).</dd>
 <dt>Images</dt><dd>? free FLUX models on <code>/v1/images/generations</code>, but the account's image budget answered 429.</dd>
 <dt>End to end</dt><dd>Not run (blocked).</dd>
@@ -828,26 +854,30 @@ mark are below.
 <h4>OpenCode Go <span class="verdict no">✗ needs a session header</span></h4>
 <dl>
 <dt>Endpoint</dt><dd><code>opencode.ai/zen/go/v1</code>, a flat-rate subscription; tested with <code>glm-5.3-flash</code>.</dd>
-<dt>HTTP/1.1</dt><dd>✗ every request needs an <code>x-opencode-session</code> header (400 <code>MissingSessionID</code>); the head template allows only Host, Authorization, Content-Type, Accept-Encoding, Connection and Content-Length. With the header added the rest is like xKiro: ✓ A1, A2, A6, A7, A9, A11, A12; A4, A10 accepted.</dd>
-<dt>HTTP/2</dt><dd>✗ H1: no <code>h2</code> in ALPN.</dd>
+<dt>HTTP/1.1</dt><dd>✗ every request needs an <code>x-opencode-session</code> header (400 <code>MissingSessionID</code>); the head template allows only Host, Authorization, Content-Type, Accept-Encoding, Connection and Content-Length. With the header added the profile holds (A1, A2, A6, A7, A9, A11, A12); unknown and price fields are accepted (A4, A10).</dd>
+<dt>HTTP/2</dt><dd>✗ no <code>h2</code> in ALPN (H1).</dd>
 <dt>End to end</dt><dd>Not run (blocked). What carrying the header would take is in docs/PROVIDERS.md.</dd>
 </dl>
 </div>
 
 <div class="prov" id="prov-opencode-zen">
-<h4>OpenCode Zen <span class="verdict na">? untested (free quota)</span></h4>
+<h4>OpenCode Zen <span class="verdict na">? untested: the free quota is never available to this key</span></h4>
 <dl>
 <dt>Endpoint</dt><dd><code>opencode.ai/zen/v1</code> (OpenCode Go key). 47 models, 11 free (<code>/zen/v1/models</code>), for example <code>deepseek-v4.1-flash-free</code>.</dd>
-<dt>HTTP/1.1</dt><dd>✓ A9 (the TLS profile). A1-A12 could not run: every chat request was a 429 <code>FreeUsageLimitError</code> (the free usage limit of the account; <code>retry-after</code> 12 655 s), for <code>deepseek-v4.1-flash-free</code> and <code>glm-5.3-flash-free</code>, with or without <code>x-opencode-session</code>. Paid models need a balance (402).</dd>
-<dt>HTTP/2</dt><dd>✗ H1: no <code>h2</code> in ALPN. HTTP/1.1 only, once the free quota allows a profile run.</dd>
+<dt>Quota</dt><dd>Every chat request is a 429 <code>FreeUsageLimitError</code> ("Free models work in OpenCode; subscribe to OpenCode Go to keep going"), for four free models, with or without <code>x-opencode-session</code>. Tried 2026-11-12 ~20:30 UTC (<code>retry-after</code> 12 655 s), 23:36 UTC (<code>retry-after</code> 1405 s, counting down to midnight) and 2026-11-13 00:00:35 UTC: still a 429, now with <code>retry-after</code> 86 364 s. The free models appear to be meant for the OpenCode client only. Paid models need a balance (402).</dd>
+<dt>HTTP/1.1</dt><dd>The TLS profile passes (A9); every other item is inconclusive on the 429.</dd>
+<dt>HTTP/2</dt><dd>✗ no <code>h2</code> in ALPN (H1): HTTP/1.1 only (an offer with <code>http: ["1.1"]</code> and no <code>h2</code> block).</dd>
+<dt>End to end</dt><dd>Sidecar (2026-11-13, HTTP/1.1): the protocol runs against Zen (handshake, credential head, body, proofs); the 429 head was disclosed through π_C3S and settled as an error, the receipt verified; the model-swap attack was refused. Chat itself (usage event, decoy, caps) is untested; no node run.</dd>
 <dt>Header</dt><dd>Unlike Go, Zen does not ask for <code>x-opencode-session</code> (an unknown model without it is a 400 "Model is unavailable", not <code>MissingSessionID</code>).</dd>
 </dl>
 </div>
 
 <h4>How it was measured</h4>
 <p>
+The checks of <code>provider-profile-check.py</code> are numbered A1-A13 (HTTP/1.1) and H1-H8 (HTTP/2); the
+provider notes above name them next to what they mean, for operators who re-run the check.
 Each provider got its own offer file and ran the HTTP/1.1 profile items (A1, A2, A4-A7, A9-A12; A3 is
-Venice-only, A8 and A13 were not run), the HTTP/2 items H1-H8 at the idle time in the table, the idle close of
+Venice-only, A8 and A13 were not run), the HTTP/2 items H1-H8 at the suggested <code>idle_secs</code>, the idle close of
 one silent HTTP/2 connection and whether a PING every 120 s holds it 15 minutes. The profile check uses the
 client's exact TLS profile (TLS 1.3, one suite, P-256, a KeyUpdate after the head). Providers whose chat profile
 holds then ran end to end through our sidecar with the reference driver (<code>crypto/tools/v3-check.sh</code>: both
