@@ -25,6 +25,9 @@ jobs:
           cache: npm
       # Installs the library from its pinned git commit; npm runs its
       # `prepare` (tsc → dist/); the wasm is committed in the library.
+      # npm resolves a GitHub dependency over ssh first, and the runner has no
+      # key: the library repository is public, so fetch it over https.
+      - run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
       - run: npm ci
       - run: npm run build
         env:
