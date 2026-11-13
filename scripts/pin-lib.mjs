@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 const sha = process.argv[2];
 if (!/^[0-9a-f]{40}$/.test(sha ?? "")) throw new Error("usage: node scripts/pin-lib.mjs <40-hex commit>");
 const spec = `github:jooray/routstr-confidential-web#${sha}`;
-const resolved = `git+ssh://git@github.com/jooray/routstr-confidential-web.git#${sha}`;
+const resolved = `git+https://github.com/jooray/routstr-confidential-web.git#${sha}`;
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 pkg.dependencies["@routstr/confidential-web"] = spec;
 writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
