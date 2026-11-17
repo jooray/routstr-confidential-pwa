@@ -1,7 +1,7 @@
 {
   "name": "Routstr Confidential Chat",
   "short_name": "Confidential",
-  "description": "Chat through a routstr node that never sees your prompt or the answer (confidential mode v2, verified in your browser).",
+  "description": "Chat through a routstr node that never sees your prompt or the answer (confidential mode v3, verified in your browser).",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
