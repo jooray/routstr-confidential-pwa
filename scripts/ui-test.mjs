@@ -12,7 +12,7 @@ for (const vp of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
   await page.waitForFunction(() => (document.querySelector("#model")?.value ?? "").length > 0, null, { timeout: 30000 });
   const tag = `${vp.width}px`;
   check(`${tag} one input, no select`, (await page.$$("select#model, #model-search")).length === 0);
-  check(`${tag} default shown`, /DeepSeek V4 Flash 0731/i.test(await page.inputValue("#model")), await page.inputValue("#model"));
+  check(`${tag} default shown`, /DeepSeek V4\.1 Flash 1017/i.test(await page.inputValue("#model")), await page.inputValue("#model"));
   await page.click("#model");
   const all = await page.$$eval("#model-list li", (l) => l.length);
   await page.keyboard.type("qwen flash");

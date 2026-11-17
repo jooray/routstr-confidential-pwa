@@ -9,7 +9,11 @@
 //  - an automatic update reload keeps the in-memory key, the withdrawn token
 //    and the pending invoices of this tab;
 //  - a malformed image block in the signed offer turns images off, chat works;
-//  - a request body above the relay's limit is refused before any session.
+//  - a request body above the relay's limit is refused before any session;
+//  - a chat request shows its stages in plain words, and the 2PC download as
+//    a bar (scripted events); its failure is one plain sentence with the raw
+//    text under "details"; every library error code has a plain sentence;
+//  - a deposit outcome the library flags is shown as a notice.
 //   node scripts/wallet-test.mjs      (build first: npm run build)
 import { chromium } from "playwright";
 import { PREFIX, serveDist } from "./serve-dist.mjs";
@@ -77,9 +81,18 @@ const context = await browser.newContext({ serviceWorkers: "block" });
 const page = await context.newPage();
 page.on("dialog", (d) => d.accept());
 const sockets = [];
+/** While set, the fake node answers nothing (the request waits), and the socket is kept here. */
+let hold = false;
+let heldWs;
 await page.routeWebSocket(/(fake|other)-node\.test/, (ws) => {
   sockets.push(ws.url());
-  ws.onMessage(() => ws.send(JSON.stringify({ type: "error", reason: "test node stops here", status: 503 })));
+  ws.onMessage(() => {
+    if (hold) {
+      heldWs = ws;
+      return;
+    }
+    ws.send(JSON.stringify({ type: "error", reason: "test node stops here", status: 503 }));
+  });
 });
 /** Every Authorization header each node received. */
 const auth = { [NODE_A]: [], [NODE_B]: [] };
@@ -226,6 +239,59 @@ await page.waitForTimeout(800);
 const toastText = (await page.textContent(".toast")) ?? "";
 check("too-large body: refused with what to do", /too large to send/.test(toastText) && /new chat/.test(toastText), toastText.slice(0, 200));
 check("too-large body: no session opened", sockets.length === s0);
+
+// Stages of a chat request, in plain words, and the 2PC download as a bar.
+hold = true;
+await page.evaluate(() => {
+  document.getElementById("prompt").value = "hello";
+});
+await page.click("#send");
+const meta = () => page.textContent("#messages .msg.assistant:last-child .meta");
+const bar = () => page.$eval("#messages .msg.assistant:last-child .meta progress", (b) => ({ hidden: b.hidden, value: b.value, max: b.max })).catch(() => undefined);
+await page.waitForFunction(() => /confidential/i.test(document.querySelector("#messages .msg.assistant:last-child .meta")?.textContent ?? ""), null, { timeout: 10000 }).catch(() => {});
+check("chat: a starting stage is shown", /confidential/i.test((await meta()) ?? ""), await meta());
+check("chat: no bar before the download starts", (await bar())?.hidden === true, JSON.stringify(await bar()));
+await page.evaluate(() => window.__rc.event({ ev: "ready", kind: "chat", http: "2", armed: false }));
+check("chat: the setup stage in plain words", /Setting up a secure connection/.test((await meta()) ?? ""), await meta());
+await page.evaluate(() => window.__rc.event({ ev: "twopc_progress", kind: "chat", received: 8_200_000, expected: 16_400_000 }));
+const b1 = await bar();
+check("chat: the 2PC download as a bar with megabytes", b1?.hidden === false && b1.value === 8_200_000 && b1.max === 16_400_000 && /8\.2 of 16\.4 MB/.test((await meta()) ?? ""), JSON.stringify({ b1, meta: await meta() }));
+await page.evaluate(() => window.__rc.event({ ev: "twopc_progress", kind: "images", received: 1, expected: 16_400_000 }));
+check("chat: an image connection's progress does not move the chat bar", (await bar())?.value === 8_200_000);
+await page.evaluate(() => window.__rc.event({ ev: "armed", kind: "chat", http: "2", arm_ms: 1 }));
+check("chat: after the download the bar goes and the next stage shows", (await bar())?.hidden === true && /Connecting to the provider/.test((await meta()) ?? ""), await meta());
+await page.evaluate(() => window.__rc.event({ ev: "pi_win_ok", kind: "chat", first_seq: 1, count: 1 }));
+check("chat: the proof stage", /Waiting for the first words/.test((await meta()) ?? ""), await meta());
+// The node then refuses: one plain sentence, the raw text under "details".
+heldWs?.send(JSON.stringify({ type: "error", reason: "test node stops here", status: 503 }));
+hold = false;
+await page.waitForFunction(() => document.querySelector("#messages .msg.assistant:last-child")?.classList.contains("error"), null, { timeout: 30000 }).catch(() => {});
+const errText = (await meta()) ?? "";
+check("chat error: one plain sentence (no raw node text in the line)", /(node|connection|charged)/i.test(errText) && !/test node stops here/.test(errText), errText);
+await page.click("#messages .msg.assistant:last-child .meta button:has-text('details')");
+const detail = await page.$eval("#side .error-detail pre", (e) => e.textContent).catch(() => "");
+check("chat error: the raw text under details", /test node stops here/.test(detail ?? ""), detail);
+
+// Every error code of the library has its own plain sentence.
+const codes = await page.evaluate(() => window.__rc.errorCodes);
+const generic = await page.evaluate((codes) => codes.filter((c) => /^Something went wrong/.test(window.__rc.friendlyError(c))), codes);
+check(`every library error code (${codes.length}) has a plain sentence`, codes.length >= 24 && generic.length === 0, JSON.stringify(generic));
+const sample = await page.evaluate(() => ({
+  receipt: window.__rc.friendlyError("receipt_verification"),
+  timeoutReached: window.__rc.friendlyError("timeout", "slow", { mayHaveReachedProvider: true }),
+  timeoutNot: window.__rc.friendlyError("timeout"),
+  unreachable: window.__rc.friendlyError("offer_unavailable"),
+}));
+check("receipt failure: says not to trust the answer", /Do not trust/.test(sample.receipt), sample.receipt);
+check("timeout after release: may be charged", /may be charged/.test(sample.timeoutReached) && /not charged/.test(sample.timeoutNot), JSON.stringify(sample));
+check("node unreachable: what to do", /Cannot reach the node/.test(sample.unreachable), sample.unreachable);
+
+// A deposit outcome the library flags: a notice in the wallet, until dismissed.
+await page.evaluate(() => window.__rc.event({ ev: "warning", code: "deposit_outcome", message: "charged after a releasing receipt" }));
+const notice = await page.textContent("#deposit-warnings").catch(() => "");
+check("deposit_outcome warning: shown as a notice", /connection deposit/.test(notice ?? "") && /charged after a releasing receipt/.test(notice ?? ""), notice);
+await page.click("#deposit-warnings button:has-text('Dismiss')");
+check("deposit_outcome warning: dismissed", ((await page.textContent("#deposit-warnings")) ?? "") === "");
 
 await browser.close();
 server.close();

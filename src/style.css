@@ -262,3 +262,6 @@ label.inline input { width: auto; }
 .attachments:not([hidden]) + .composer { border-top: 0; }
 .msg-images { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
 .msg-images img { max-width: 160px; max-height: 160px; border-radius: 8px; display: block; }
+.twopc-bar { width: 160px; max-width: 100%; height: 8px; accent-color: var(--accent, #3b82f6); }
+.error-detail { margin-top: 4px; font-size: 12px; }
+.error-detail pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0; }

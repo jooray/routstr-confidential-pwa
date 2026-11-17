@@ -2,7 +2,9 @@
  * Release versioning and automatic update (house rule: never rely on a hard
  * refresh). The running version is compiled in (__APP_VERSION__); the
  * deployed one is read from version.json (no-store) on load, when the tab
- * becomes visible and every 5 minutes. A new version makes the service
+ * becomes visible and every 5 minutes. A new version, or the same version
+ * with other files (`assets_sha256` differs from the digest built into
+ * index.html), makes the service
  * worker update; the new worker activates at once (skipWaiting +
  * clients.claim) and the page reloads on `controllerchange` — deferred while
  * a confidential request or a wallet operation is in flight — and then shows
@@ -17,6 +19,18 @@ declare const __APP_BUILD__: string;
 
 export const APP_VERSION = __APP_VERSION__;
 export const APP_BUILD = __APP_BUILD__;
+
+/**
+ * The digest of this build's files, written into index.html by the build
+ * (the same value as `assets_sha256` in its version.json); undefined in dev.
+ */
+function localAssets(): string | undefined {
+  const v = document.querySelector('meta[name="rc-assets-sha256"]')?.getAttribute("content") ?? "";
+  return /^[0-9a-f]{64}$/.test(v) ? v : undefined;
+}
+const APP_ASSETS = localAssets();
+/** What identifies a release: the version and, when known, the files' digest. */
+const APP_RELEASE = `${APP_VERSION}|${APP_ASSETS ?? ""}`;
 
 const CHECK_MS = 5 * 60_000;
 const FLAG = "routstr-confidential:updated-from";
@@ -43,7 +57,7 @@ function reload(): void {
     /* the reload must still happen */
   }
   try {
-    sessionStorage.setItem(FLAG, APP_VERSION);
+    sessionStorage.setItem(FLAG, APP_RELEASE);
   } catch {
     /* ignore */
   }
@@ -51,16 +65,17 @@ function reload(): void {
 }
 
 /**
- * Reload without a worker change, at most once per new version every
+ * Reload without a worker change, at most once per new release every
  * RETRY_MS in this tab: if the reload still shows the old version (the
  * browser may serve the page from its HTTP cache for a few minutes), a later
  * check tries again instead of reloading in a loop.
  */
 function fallbackReload(version: string): void {
   try {
-    const [v, at] = (sessionStorage.getItem(TRIED) ?? "").split("|");
-    if (v === version && Date.now() - Number(at) < RETRY_MS) return;
-    sessionStorage.setItem(TRIED, `${version}|${Date.now()}`);
+    const tried = sessionStorage.getItem(TRIED) ?? "";
+    const cut = tried.lastIndexOf("@");
+    if (cut > 0 && tried.slice(0, cut) === version && Date.now() - Number(tried.slice(cut + 1)) < RETRY_MS) return;
+    sessionStorage.setItem(TRIED, `${version}@${Date.now()}`);
   } catch {
     /* ignore */
   }
@@ -72,12 +87,22 @@ export function idle(): void {
   if (pendingReload && !busy()) reload();
 }
 
-async function remoteVersion(): Promise<string | undefined> {
+/**
+ * The deployed release (`version|assets_sha256`), or undefined when it is
+ * this one or cannot be read. A deploy without a version bump still differs
+ * by its files' digest, so open tabs pick it up too.
+ */
+async function newerRelease(): Promise<string | undefined> {
   try {
     const r = await fetch(`./version.json?t=${Date.now()}`, { cache: "no-store" });
     if (!r.ok) return undefined;
-    const j = (await r.json()) as { version?: string };
-    return typeof j.version === "string" ? j.version : undefined;
+    const j = (await r.json()) as { version?: unknown; assets_sha256?: unknown };
+    if (typeof j.version !== "string") return undefined;
+    const assets = typeof j.assets_sha256 === "string" && /^[0-9a-f]{64}$/.test(j.assets_sha256) ? j.assets_sha256 : undefined;
+    if (j.version !== APP_VERSION) return `${j.version}|${assets ?? ""}`;
+    // Same version: another build only when both digests are known and differ.
+    if (assets && APP_ASSETS && assets !== APP_ASSETS) return `${j.version}|${assets}`;
+    return undefined;
   } catch {
     return undefined;
   }
@@ -96,7 +121,9 @@ export function setupPwa(opts: {
     const from = sessionStorage.getItem(FLAG);
     if (from) {
       sessionStorage.removeItem(FLAG);
-      if (from !== APP_VERSION) toast(`Updated to v${APP_VERSION}`);
+      const [fromVersion] = from.split("|");
+      if (fromVersion !== APP_VERSION) toast(`Updated to v${APP_VERSION}`);
+      else if (from !== APP_RELEASE) toast(`Updated to the latest build of v${APP_VERSION}`);
     }
   } catch {
     /* ignore */
@@ -125,8 +152,8 @@ export function setupPwa(opts: {
     })
     .catch(() => {});
   const check = async () => {
-    const v = await remoteVersion();
-    if (!v || v === APP_VERSION) return;
+    const v = await newerRelease();
+    if (!v) return;
     if (!reg) return fallbackReload(v);
     await reg.update().catch(() => {});
     const w = reg.installing ?? reg.waiting;

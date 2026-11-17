@@ -16,6 +16,11 @@ import {
   UpgradeRequiredError,
   RequestRefusedError,
   ConnectionDepositError,
+  StreamNotProcessedError,
+  PoolBusyError,
+  ReservationAboveCeilingError,
+  mayHaveReachedProvider,
+  CONFIDENTIAL_ERROR_CODES,
   TwoPcVersionMismatchError,
   offerConnectionDepositMsat,
   reservationMsat,
@@ -96,6 +101,8 @@ const SK = {
   stash: "rc:reload-stash",
   /** Lightning invoices still waiting for payment. */
   invoices: "rc:invoices",
+  /** The conversation's text, written right before an automatic update reload, restored (and removed) at boot. */
+  turns: "rc:reload-turns",
 };
 function sload<T>(k: string, d: T): T {
   try {
@@ -156,8 +163,20 @@ let refundToken: string | undefined;
 let keyOffers: KeyOffer[] = [];
 /** Set once an automatic reload has stashed the state: the unload guard then stays quiet. */
 let autoReloading = false;
+/** The conversation an automatic update reload stashed (text only), shown again once at boot. */
+let restoredTurns: { role: "user" | "assistant"; content: string }[] = [];
+/** Largest conversation kept over an update reload (the newest turns, text only). */
+const STASH_TURNS_BYTES = 1024 * 1024;
 // Restore what the last automatic update reload stashed, then drop the stash.
 {
+  const kept = sload<unknown>(SK.turns, undefined);
+  ssave(SK.turns, undefined);
+  if (Array.isArray(kept)) {
+    restoredTurns = kept.filter(
+      (t): t is { role: "user" | "assistant"; content: string } =>
+        !!t && (t.role === "user" || t.role === "assistant") && typeof t.content === "string" && t.content.length > 0,
+    );
+  }
   const s = sload<{ keys?: unknown; refundToken?: unknown; keyOffers?: unknown } | undefined>(SK.stash, undefined);
   ssave(SK.stash, undefined);
   if (s && typeof s === "object") {
@@ -174,6 +193,35 @@ let autoReloading = false;
 function stashForReload(): void {
   autoReloading = true;
   ssave(SK.stash, { keys: nodeKeys, refundToken, keyOffers });
+  // Separate from the wallet state: a conversation too large for the tab's
+  // storage must not cost the keys.
+  const t = stashTurns();
+  if (t.length) ssave(SK.turns, t);
+}
+
+/**
+ * The conversation's text for the reload: the newest turns up to 1 MB,
+ * without attached images or failed answers. Only this tab's
+ * sessionStorage holds it, for the reload.
+ */
+function stashTurns(): { role: "user" | "assistant"; content: string }[] {
+  const out: { role: "user" | "assistant"; content: string }[] = [];
+  let bytes = 0;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i]!;
+    if (t.error || !t.content) continue;
+    bytes += t.content.length * 2 + 32;
+    if (bytes > STASH_TURNS_BYTES) break;
+    out.unshift({ role: t.role, content: t.content });
+  }
+  return out;
+}
+
+/** Show the conversation the update reload kept (once). */
+function restoreTurns(): void {
+  if (!restoredTurns.length) return;
+  for (const t of restoredTurns) addTurn(t.role, t.content);
+  restoredTurns = [];
 }
 /** The node whose key `credential` is (the one the client talks to). */
 let activeNode = settings.node;
@@ -217,6 +265,8 @@ let outdatedNode: number | undefined;
 /** The deposit outcome of each connection, as the node reported it (connection id → text). */
 const depositOutcomes = new Map<string, { msat: number; outcome: string; reason: string; signed: boolean }>();
 let mintFees: MintFee[] | undefined;
+/** Deposit outcomes the library flagged as not matching the rules (shown in the wallet until dismissed). */
+const depositWarnings: string[] = [];
 
 // ─── tiny DOM helper ────────────────────────────────────────────────────────
 
@@ -274,6 +324,8 @@ interface Turn {
   el: HTMLElement;
   result?: ConfidentialSessionResult;
   error?: string;
+  /** The technical text behind `error`. */
+  errorDetail?: string;
   meta?: HTMLElement;
 }
 
@@ -281,6 +333,8 @@ let client: ConfidentialClient | undefined;
 let api = new NodeApi(settings.node);
 let offer: VerifiedOffer | undefined;
 let offerError: string | undefined;
+/** The technical text behind `offerError`. */
+let offerErrorDetail: string | undefined;
 let pricing: ModelPricing[] = [];
 let balance: BalanceInfo | undefined;
 let busy = false;
@@ -294,15 +348,17 @@ const events: string[] = [];
 let prewarmStatus = "off";
 /** Chat, or confidential image generation (on demand only, never pre-armed). */
 let mode: "chat" | "image" = load<"chat" | "image">(K.mode, "chat");
-/** The progress line of the image request in flight. */
-let imageProgress: HTMLElement | undefined;
+/** The progress line of the request in flight (chat until its answer starts, or an image request). */
+type Progress = { kind: "chat" | "images"; text: HTMLElement; bar: HTMLProgressElement };
+let activeProgress: Progress | undefined;
 
 function logEvent(e: Record<string, unknown>): void {
   const { t, ...rest } = e;
   const line = `${new Date(Number(t) || Date.now()).toLocaleTimeString()} ${JSON.stringify(rest)}`;
   events.push(line);
   if (events.length > 300) events.shift();
-  if (e.kind === "images") imageProgressEvent(e);
+  if (e.kind === "images" && e.ev === "pi_win_ok") imageBodySent = true;
+  if (activeProgress && (e.kind === "images") === (activeProgress.kind === "images")) progressEvent(activeProgress, e);
   if (e.ev === "prewarm" && typeof e.status === "string") {
     prewarmStatus = e.status;
     renderStatus();
@@ -311,6 +367,12 @@ function logEvent(e: Record<string, unknown>): void {
     depositOutcomes.set(e.sid, { msat: Number(e.msat), outcome: String(e.outcome), reason: String(e.reason), signed: e.signed === true });
     if (e.outcome === "charged") toast(`A connection ended unused: the node kept its ${formatSats(Number(e.msat))} deposit (${String(e.reason)}).`, 8000);
     void refreshBalance();
+  }
+  if (e.ev === "warning" && e.code === "deposit_outcome") {
+    const text = `The node's report on a connection deposit did not match the rules: ${String(e.message ?? "no detail")}. Check your balance; if money is missing, use another node.`;
+    depositWarnings.push(text);
+    toast(text, 12000);
+    renderDepositWarnings();
   }
   if (e.ev === "framing_fallback") {
     toast("HTTP/2 to the provider failed to open on this node: using HTTP/1.1 for 10 minutes.", 8000);
@@ -539,9 +601,28 @@ function renderSide(): void {
   );
 }
 
+function depositWarningBoxes(): HTMLElement[] {
+  return depositWarnings.map((text, i) =>
+    h(
+      "div",
+      { class: "warnbox deposit-warning" },
+      h("p", {}, text),
+      h("button", { type: "button", class: "secondary", onclick: () => { depositWarnings.splice(i, 1); renderDepositWarnings(); } }, "Dismiss"),
+    ),
+  );
+}
+
+function renderDepositWarnings(): void {
+  document.getElementById("deposit-warnings")?.replaceChildren(...depositWarningBoxes());
+}
+
 function walletCard(): HTMLElement {
   const card = h("div", { class: "card" });
-  card.append(h("div", { id: "refund-token" }, ...refundTokenBox()), h("div", { id: "key-offers" }, ...keyOfferBoxes()));
+  card.append(
+    h("div", { id: "deposit-warnings" }, ...depositWarningBoxes()),
+    h("div", { id: "refund-token" }, ...refundTokenBox()),
+    h("div", { id: "key-offers" }, ...keyOfferBoxes()),
+  );
   if (credential) {
     const avail = balance ? balance.balance - balance.reserved : undefined;
     card.append(
@@ -625,6 +706,13 @@ function walletCard(): HTMLElement {
   return card;
 }
 
+/** How long the node keeps an idle connection, in words ("2 minutes", "90 seconds"). */
+function idleText(o: VerifiedOffer): string {
+  const s = typeof o.idle_timeout_s === "number" && o.idle_timeout_s > 0 ? o.idle_timeout_s : 120;
+  if (s % 60 === 0) return s === 60 ? "1 minute" : `${s / 60} minutes`;
+  return s > 90 ? `about ${Math.round(s / 60)} minutes` : `${s} seconds`;
+}
+
 /** Plain-language costs, all read from the signed offer and the node's model list. */
 function costsCard(): HTMLElement {
   const card = h("div", { class: "card", id: "costs" });
@@ -652,6 +740,12 @@ function costsCard(): HTMLElement {
     h(
       "p",
       {},
+      h("strong", {}, "Data: "),
+      "a message that opens a new connection first downloads about 18 MB of setup data (the two-party setup and the proofs); later messages on an open connection need little.",
+    ),
+    h(
+      "p",
+      {},
       h("strong", {}, "Connection deposit: "),
       deposit
         ? `opening a connection reserves ${formatSats(deposit)}; the connection's first answer releases it (the receipt says so). A connection that ends without an answer (for example one prepared ahead and never used) loses it, unless the node or the provider failed.`
@@ -662,7 +756,7 @@ function costsCard(): HTMLElement {
       {},
       h("strong", {}, "Pre-warming: "),
       deposit > 0
-        ? `off by default, because on HTTP/2 the open connection already stays warm between messages (for about two minutes of idle). Turned on, after your first message the app also keeps a connection prepared (its two-party setup done), so the answer after a longer pause starts faster. It costs nothing if you use it; one you never use costs its ${formatSats(deposit)} deposit. It is only prepared while this page is visible and you have funds for the deposit and one message.`
+        ? `off by default, because on HTTP/2 the open connection already stays warm between messages (for ${idleText(offer)} of idle). Turned on, after your first message the app also keeps a connection prepared (its two-party setup done), so the answer after a longer pause starts faster. It costs nothing if you use it; one you never use costs its ${formatSats(deposit)} deposit. It is only prepared while this page is visible and you have funds for the deposit and one message.`
         : "after your first message, keeping a connection prepared makes the next answer faster when no connection is open, and costs nothing extra. It is only prepared while this page is visible and you have funds.",
     ),
     h(
@@ -787,7 +881,9 @@ function nodeCard(): HTMLElement {
           ["idle connection closed after", `${offer.idle_timeout_s ?? 120} s`],
           ["session fee", offer.session_fee_msat ? `${formatSats(offer.session_fee_msat)} once per connection` : "none"],
         ])
-      : h("p", { class: offerError ? "cross" : "muted" }, offerError ?? "loading offer…"),
+      : offerError
+        ? errorBox(offerError, offerErrorDetail)
+        : h("p", { class: "muted" }, "loading offer…"),
     h("div", { id: "conns" }, ...connectionLines()),
   );
 }
@@ -808,13 +904,23 @@ function depositText(r: ConfidentialSessionResult): string {
   return `${formatSats(d.msat)}, released by this connection's first answer`;
 }
 
+/** A plain error sentence, with the technical text under "details". */
+function errorBox(text: string, detail?: string): HTMLElement {
+  return h(
+    "div",
+    {},
+    h("span", { class: "cross" }, text),
+    detail && detail !== text ? h("details", { class: "error-detail" }, h("summary", {}, "details"), h("pre", {}, detail)) : null,
+  );
+}
+
 function verificationPanel(): HTMLElement {
   const r = selected?.result;
   if (!r) {
     return h(
       "div",
       { class: "card muted" },
-      selected?.error ? h("span", { class: "cross" }, selected.error) : "Send a message to see what your browser verified: the provider's certificate, the proofs, the signed receipt and the timings.",
+      selected?.error ? errorBox(selected.error, selected.errorDetail) : "Send a message to see what your browser verified: the provider's certificate, the proofs, the signed receipt and the timings.",
     );
   }
   const p = r.provider;
@@ -1700,9 +1806,11 @@ async function onSend(e: Event): Promise<void> {
   const thinking = h("details", { class: "thinking", hidden: true }, h("summary", {}, "thinking…"), thinkingText);
   let reasoning = "";
   let finish: string | null | undefined;
-  const meta = h("div", { class: "meta" }, "starting confidential session…");
+  const meta = h("div", { class: "meta" });
   answer.el.replaceChildren(thinking, body, meta);
   answer.meta = meta;
+  const chatProgress = progressLine("chat", meta, "Starting a confidential request…");
+  activeProgress = chatProgress;
   busy = true;
   $<HTMLButtonElement>("send").disabled = true;
   const t0 = performance.now();
@@ -1715,6 +1823,7 @@ async function onSend(e: Event): Promise<void> {
       ...reasoningParam(),
       stream: true,
     });
+    if (activeProgress === chatProgress) activeProgress = undefined;
     meta.textContent = "streaming (records verified as they decrypt)…";
     for await (const chunk of stream) {
       const choice = chunk.choices?.[0];
@@ -1809,12 +1918,14 @@ async function onSend(e: Event): Promise<void> {
     }
     const msg = friendlyError(err);
     answer.error = msg;
+    answer.errorDetail = errorDetail(err);
     testHook().errors.push(msg);
     answer.el.classList.add("error");
     if (!answer.content) body.textContent = "";
     meta.replaceChildren(h("span", { class: "cross" }, msg), h("button", { type: "button", onclick: () => showDetails(answer) }, "details"));
     selectTurn(answer);
   } finally {
+    if (activeProgress === chatProgress) activeProgress = undefined;
     busy = false;
     $<HTMLButtonElement>("send").disabled = false;
     void refreshBalance();
@@ -1932,34 +2043,132 @@ function renderAttach(): void {
   b.title = ok ? "Attach an image" : `${p.name ?? p.id} does not accept image input`;
 }
 
+/** The technical text of an error, kept under "details" next to the plain one. */
+function errorDetail(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const code = (err as { code?: unknown }).code;
+  const detail = (err as { detail?: unknown }).detail;
+  return [typeof code === "string" ? `[${code}]` : "", err.message, typeof detail === "string" && detail ? `(${detail})` : ""].filter(Boolean).join(" ");
+}
+
+/** Whether money was taken, from the library's release marker. */
+function moneyNote(err: unknown): string {
+  return mayHaveReachedProvider(err)
+    ? "Your message may have reached the provider, so it may be charged (your balance will show it). It is not sent again automatically."
+    : "Your message did not reach the provider and was not charged.";
+}
+
+/**
+ * One sentence a non-expert can act on for every error the library throws:
+ * what happened, whether money was taken, what to do. The raw text stays
+ * available through errorDetail.
+ */
 function friendlyError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
+  const rawCode = err instanceof Error ? (err as { code?: unknown }).code : undefined;
+  const code = typeof rawCode === "string" ? rawCode : undefined;
+  const status = (err as { status?: unknown } | undefined)?.status;
+  // Specific classes first (several share a code).
   if (err instanceof NodeProtocolOutdatedError) {
-    return `This node runs an old protocol (routstr-confidential v${err.nodeVersion}); this app speaks v3. The node must be updated before it can serve confidential requests.`;
+    return `This node runs an old protocol (routstr-confidential v${err.nodeVersion}); this app speaks v3. The node must be updated before it can serve confidential requests. Nothing was charged.`;
   }
-  if (err instanceof UpgradeRequiredError) return "The node speaks a newer protocol than this app. Reload the page to update the app.";
-  if (err instanceof TwoPcVersionMismatchError) return "This app and the node run different versions of the two-party key schedule. Reload the page to update, or pick another node.";
+  if (err instanceof UpgradeRequiredError) return "The node speaks a newer protocol than this app. Reload the page to update the app. Nothing was charged.";
+  if (err instanceof TwoPcVersionMismatchError) return "This app and the node run different versions of the secure setup. Reload the page to update, or pick another node. Nothing was charged.";
   if (err instanceof ConnectionDepositError) {
     return err.status === 402
-      ? `Not enough balance for the connection deposit of ${formatSats(err.depositMsat)} (${raw}). Top up.`
-      : `The node asks for a connection deposit of ${formatSats(err.depositMsat)}, more than this app accepts.`;
+      ? `Not enough balance for the connection deposit of ${formatSats(err.depositMsat)}. Top up the wallet and try again. Nothing was charged.`
+      : `The node asks for a connection deposit of ${formatSats(err.depositMsat)}, more than this app accepts. Nothing was sent or charged. Use another node.`;
   }
-  if (err instanceof RequestRefusedError && err.status === 402) {
-    return `Not enough balance for this request's reservation (${err.reason}). Top up, or lower max tokens. The connection stays open for the next try.`;
+  if (err instanceof StreamNotProcessedError) {
+    return `The provider was busy and turned your message away without reading it, again after an automatic retry. ${err.receipt ? `The node charged ${formatSats(err.costMsats ?? 0)} for it (the session fee, if it was due).` : "It was not charged."} Wait a moment and send it again.`;
   }
-  if (err instanceof SessionRejectedError) {
-    if (err.status === 402) return `Not enough balance for this request's reservation (${raw}). Top up, or lower max tokens.`;
-    if (err.status === 429) return "The node already holds too many unused connections for your address (other tabs or devices behind the same IP). Close them or wait a few minutes.";
-    if (err.status === 409) return `The node's signed offer changed (prices or fees); reload to accept the new one. (${raw})`;
-    if (err.status === 401) return `The node does not know this key (${raw}).`;
+  if (err instanceof PoolBusyError) return "Other messages are still using every connection to this node. Wait for them to finish and send again. Nothing was charged.";
+  if (err instanceof ReservationAboveCeilingError) {
+    return `The node wanted to hold ${formatSats(err.reservedMsat)} while this message runs, more than this app allows (${formatSats(err.ceilingMsat)}). Nothing was sent or charged. Lower max tokens, pick another model, or use another node.`;
   }
+  if (err instanceof RequestRefusedError) {
+    if (err.status === 402) return "Not enough balance for this message. Top up, or lower max tokens. Nothing was charged; the connection stays open for the next try.";
+    if (err.status === 401 || err.status === 403) return "The node does not accept your key for this message. Nothing was charged. Check the key in the Wallet panel.";
+    if (err.status === 429) return "The node is busy. Nothing was charged. Wait a minute and send again.";
+    if (/offer_(expired|changed)/.test(err.reason)) return "The node changed its prices. Nothing was charged. Reload the page to accept the new ones, then send again.";
+    return "The node turned this message down. Nothing was charged; the connection stays open. Send it again, or use another node if this repeats.";
+  }
+  switch (code) {
+    case "offer_unavailable":
+      return "Cannot reach the node. Check your internet connection and the node URL in the Node panel, then try again. Nothing was charged.";
+    case "offer_malformed":
+      return "The node's price list is not in a form this app can read, so the app does not use the node. Nothing was charged. Reload to update the app, or use another node.";
+    case "offer_bad_signature":
+      return "The node's price list is not signed correctly, so the app does not trust it. Nothing was charged. Use another node.";
+    case "offer_unpinned":
+      return "No node key is set, so the app cannot check who it is talking to. Enter the node key in the Node panel. Nothing was charged.";
+    case "offer_pin_mismatch":
+      return "The node signed with a different key than the one in the Node panel. Nothing was sent or charged. Check the node key, or use another node.";
+    case "offer_unsupported_version":
+      return "The node uses a protocol version this app does not support. Reload to update the app, or use another node. Nothing was charged.";
+    case "trusted_host_rejected":
+      return "The node forwards to a provider you have not marked as trusted. Nothing was sent or charged. Change \"Trusted provider host\" in the Node panel only if you trust that provider.";
+    case "session_protocol":
+      return `The node did not follow the protocol, so the app stopped. ${moneyNote(err)} Try again; if it repeats, use another node.`;
+    case "session_rejected":
+      if (status === 402) return "Not enough balance for this message. Top up, or lower max tokens. Nothing was charged.";
+      if (status === 429) return "The node already holds too many connections for your address (other tabs or devices on the same network). Close them or wait a few minutes. Nothing was charged.";
+      if (status === 409) return "The node changed its prices or fees. Reload the page to accept the new ones. Nothing was charged.";
+      if (status === 401 || status === 403) return "The node does not accept your key. Nothing was charged. Check the key in the Wallet panel.";
+      return `The node closed the connection. ${moneyNote(err)} Try again; if it repeats, use another node.`;
+    case "prover_failed":
+      return `A proof could not be made or did not check out, so the app stopped. ${moneyNote(err)} Try again; if it repeats, use another node.`;
+    case "prover_missing":
+      return "The proof engine did not load in this browser. Reload the page. Nothing was charged.";
+    case "receipt_verification":
+      return "The node's receipt does not check out. Do not trust this answer or its charge. Check your balance, and consider using another node.";
+    case "response_verification":
+      return "The answer could not be verified. Do not trust it. Try again; if it repeats, use another node.";
+    case "timeout":
+      return `The request took too long and was stopped. ${moneyNote(err)} Check your internet connection and try again.`;
+    case "not_configured":
+      return "The app is not set up for this node. Check the Node panel (URL, node key, trusted provider host).";
+    case "unsupported_endpoint":
+      return "This node cannot serve this kind of request. Nothing was charged.";
+    case "offer_no_images":
+      return "This node does not offer image generation. Nothing was charged.";
+    case "pinned_parameter":
+      return "A setting of this request is fixed by the node and cannot be changed here. Nothing was sent or charged. Change the setting and try again.";
+    case "upstream_error":
+      return `The provider returned an error${typeof status === "number" ? ` (HTTP ${status})` : ""}. The receipt shows what it cost. Try again later, or pick another model.`;
+    case "request_refused":
+      return "The node turned this message down. Nothing was charged. Send it again, or use another node if this repeats.";
+    case "reservation_above_ceiling":
+      return "The node wanted to hold more for this message than this app allows. Nothing was sent or charged. Lower max tokens or use another node.";
+    case "node_protocol_outdated":
+      return "This node runs an old protocol and must be updated before it can serve confidential requests. Nothing was charged.";
+    case "upgrade_required":
+      return "The node speaks a newer protocol than this app. Reload the page to update the app. Nothing was charged.";
+    case "twopc_version_mismatch":
+      return "This app and the node run different versions of the secure setup. Reload the page to update, or pick another node. Nothing was charged.";
+  }
+  if (code) return `Something went wrong (${code}). ${moneyNote(err)} Try again; the details below say more.`;
   return raw;
 }
 
 /** Non-secret outcomes for the browser tests (no credential, no prompt). */
 function testHook(): { results: unknown[]; errors: string[]; renderMarkdown?: (t: string) => string } {
   const w = window as unknown as { __rc?: { results: unknown[]; errors: string[]; renderMarkdown?: (t: string) => string } };
-  w.__rc ??= { results: [], errors: [], renderMarkdown, waterfall, reencode, client: () => client } as never;
+  // Test helpers only: no credential or secret is reachable through them.
+  w.__rc ??= {
+    results: [],
+    errors: [],
+    renderMarkdown,
+    waterfall,
+    reencode,
+    client: () => client,
+    addTurn: (role: Turn["role"], content: string) => void addTurn(role, content),
+    turns: () => turns.map((t) => ({ role: t.role, content: t.content })),
+    event: (e: Record<string, unknown>) => logEvent({ t: Date.now(), ...e }),
+    friendlyError: (code: string, message = "test", props: Record<string, unknown> = {}) =>
+      friendlyError(Object.assign(new Error(message), { code }, props)),
+    errorCodes: [...CONFIDENTIAL_ERROR_CODES],
+  } as never;
   return w.__rc;
 }
 
@@ -2187,6 +2396,7 @@ function meteredOk(): boolean {
   );
 }
 
+/** What each step of an image request means, in plain words. */
 const IMAGE_STAGES: Record<string, string> = {
   request: "starting the confidential request…",
   ready: "secure setup: the node checked the key and reserved the connection deposit…",
@@ -2199,15 +2409,52 @@ const IMAGE_STAGES: Record<string, string> = {
   attestation: "verifying the response and the node's attestation…",
 };
 
-function imageProgressEvent(e: Record<string, unknown>): void {
-  if (e.ev === "pi_win_ok") imageBodySent = true;
-  if (!imageProgress) return;
-  if (e.ev === "response_progress" && typeof e.bytes === "number") {
-    imageProgress.textContent = `downloading the image (${(e.bytes / 1e6).toFixed(1)} MB)…`;
+/** What each step of a chat request means, until the answer starts. */
+const CHAT_STAGES: Record<string, string> = {
+  ready: "The node accepted your key. Setting up a secure connection (a one-time download)…",
+  armed: "Secure setup done. Connecting to the provider…",
+  certificate_verified: "The provider's certificate checks out. Checking that the node adds only its key…",
+  open: "Connected. Sending your encrypted message…",
+  request_sent: "Message sent. Proving it carries the model and limits you chose…",
+  body_sent: "Message sent. Proving it carries the model and limits you chose…",
+  pi_win_ok: "Proof checked. Waiting for the first words of the answer…",
+  request_retry: "The connection dropped before your message left. Trying again on a new one…",
+  refusal_settled: "The provider was busy and turned the message away unread. Trying again…",
+};
+
+/** A progress line: the stage text and a bar (shown only while the 2PC data downloads). */
+function progressLine(kind: "chat" | "images", el: HTMLElement, text: string): Progress {
+  const t = h("span", { class: "stage" }, text);
+  const bar = h("progress", { class: "twopc-bar", max: 1, value: 0, hidden: true });
+  el.replaceChildren(t, bar);
+  return { kind, text: t, bar };
+}
+
+function progressEvent(p: Progress, e: Record<string, unknown>): void {
+  if (e.ev === "twopc_progress") {
+    const received = Number(e.received);
+    const expected = Number(e.expected);
+    if (!(received >= 0) || !(expected > 0)) return;
+    p.bar.hidden = false;
+    p.bar.max = expected;
+    p.bar.value = Math.min(received, expected);
+    p.text.textContent = `Setting up a secure connection: ${(Math.min(received, expected) / 1e6).toFixed(1)} of ${(expected / 1e6).toFixed(1)} MB…`;
     return;
   }
-  const text = IMAGE_STAGES[String(e.ev)];
-  if (text) imageProgress.textContent = text;
+  if (e.ev === "response_progress" && typeof e.bytes === "number" && p.kind === "images") {
+    p.bar.hidden = true;
+    p.text.textContent = `downloading the image (${(e.bytes / 1e6).toFixed(1)} MB)…`;
+    return;
+  }
+  let text: string | undefined;
+  if (p.kind === "images") text = IMAGE_STAGES[String(e.ev)];
+  else if (e.ev === "request") {
+    text = e.path === "reused" ? "Using the open connection…" : e.path === "armed" ? "Using a prepared connection…" : "Opening a new confidential connection…";
+  } else text = CHAT_STAGES[String(e.ev)];
+  if (!text) return;
+  // The bar belongs to the setup download: any later step hides it.
+  if (e.ev !== "ready") p.bar.hidden = true;
+  p.text.textContent = text;
 }
 
 async function onSendImage(): Promise<void> {
@@ -2239,7 +2486,7 @@ async function onSendImage(): Promise<void> {
   );
   const card = h("div", { class: "msg assistant image-pending" }, h("div", {}, prompt), progress, cancel);
   $("gallery").prepend(card);
-  imageProgress = progress;
+  activeProgress = progressLine("images", progress, "starting a confidential session…");
   imageBodySent = false;
   busy = true;
   $<HTMLButtonElement>("send").disabled = true;
@@ -2250,7 +2497,7 @@ async function onSendImage(): Promise<void> {
       { signal: ctrl.signal },
     );
     ta.value = "";
-    imageProgress = undefined;
+    activeProgress = undefined;
     const tiles: HTMLElement[] = [];
     const warnings = [...out.warnings];
     for (const blob of out.images) {
@@ -2293,13 +2540,13 @@ async function onSendImage(): Promise<void> {
     card.replaceWith(...(note ? [note] : []), ...tiles);
     if (tiles[0]) showImageDetails(tiles[0], out.confidential);
   } catch (err) {
-    imageProgress = undefined;
+    activeProgress = undefined;
     if (ctrl.signal.aborted) {
       cancel.remove();
     } else {
       const msg =
         err instanceof UpstreamImageError
-          ? `The provider refused the request (HTTP ${err.status}). The receipt verified; a rejected request costs the node's abandon fee (a 429 or 503 the session fee, if still due on the connection).`
+          ? `The provider turned the image request down (HTTP ${err.status}). The receipt checks out: a turned-down request costs at most a small fee. Change the prompt or the model, or try again later.`
           : friendlyError(err);
       testHook().errors.push(msg);
       card.classList.add("error");
@@ -2307,7 +2554,7 @@ async function onSendImage(): Promise<void> {
         err instanceof UpstreamImageError
           ? h("button", { type: "button", onclick: () => showImageDetails(card, err.result as ConfidentialSessionResult) }, "details")
           : null;
-      progress.replaceChildren(h("span", { class: "cross" }, msg));
+      progress.replaceChildren(errorBox(msg, errorDetail(err)));
       cancel.replaceWith(...(details ? [details] : []));
     }
   } finally {
@@ -2347,6 +2594,7 @@ async function restart(): Promise<void> {
   }
   offer = undefined;
   offerError = undefined;
+  offerErrorDetail = undefined;
   outdatedNode = undefined;
   nextFraming = undefined;
   pricing = [];
@@ -2367,11 +2615,9 @@ async function restart(): Promise<void> {
       renderSide();
     });
   } catch (e) {
-    offerError = e instanceof Error ? e.message : String(e);
-    if (e instanceof NodeProtocolOutdatedError) {
-      outdatedNode = e.nodeVersion;
-      offerError = friendlyError(e);
-    }
+    offerError = friendlyError(e);
+    offerErrorDetail = errorDetail(e);
+    if (e instanceof NodeProtocolOutdatedError) outdatedNode = e.nodeVersion;
   }
   void updateFraming();
   renderStatus();
@@ -2390,6 +2636,7 @@ window.addEventListener("beforeunload", (e) => {
 
 testHook();
 layout();
+restoreTurns();
 renderSide();
 for (const inv of invoices) watchInvoice(inv);
 setupPwa({ isBusy: () => busy || walletOps > 0, toast, beforeReload: stashForReload });

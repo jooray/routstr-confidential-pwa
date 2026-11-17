@@ -39,6 +39,8 @@ const BASE = process.env.BASE ?? "/routstr-confidential-pwa/";
  *    the exact asset list; it installs with skipWaiting + clients.claim and
  *    the page reloads on `controllerchange`.
  */
+const ASSETS_PLACEHOLDER = "__ASSETS_SHA256__";
+
 function pwaRelease(): Plugin {
   let outDir = "dist";
   return {
@@ -58,8 +60,14 @@ function pwaRelease(): Plugin {
       walk(outDir);
       const assets = files.filter((f) => f !== "sw.js" && f !== "version.json").sort();
       const h = createHash("sha256");
+      // index.html is hashed with its placeholder, then gets the digest: the
+      // page compares it with version.json's to see a deploy without a version bump.
       for (const f of assets) h.update(f).update(readFileSync(join(outDir, f)));
       const digest = h.digest("hex");
+      const index = join(outDir, "index.html");
+      const html = readFileSync(index, "utf8");
+      if (!html.includes(ASSETS_PLACEHOLDER)) throw new Error("index.html lacks the rc-assets-sha256 placeholder");
+      writeFileSync(index, html.replace(ASSETS_PLACEHOLDER, digest));
       writeFileSync(
         join(outDir, "version.json"),
         JSON.stringify(
