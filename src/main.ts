@@ -1884,8 +1884,15 @@ async function onSend(e: Event): Promise<void> {
       textLength: answer.content.length,
     });
     const usage = r.ownUsage?.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
+    if (r.http.status >= 400) {
+      // The provider refused: the node disclosed only the error head and
+      // settled it. The receipt verified, so the charge is known and fair;
+      // there is no answer to show, only what happened.
+      body.replaceChildren(providerErrorNotice(r));
+      answer.el.classList.add("provider-error");
+    }
     meta.replaceChildren(
-      h("span", { class: "check" }, "verified"),
+      h("span", { class: "check" }, r.http.status >= 400 ? "receipt verified" : "verified"),
       h(
         "span",
         { class: "framing", title: `connection ${r.sid.slice(0, 8)}, request ${r.n} on it${r.stream !== undefined ? `, HTTP/2 stream ${r.stream}` : ""}` },
@@ -2041,6 +2048,49 @@ function renderAttach(): void {
   const ok = acceptsImages(p.id);
   b.disabled = !ok;
   b.title = ok ? "Attach an image" : `${p.name ?? p.id} does not accept image input`;
+}
+
+/** The provider's own error message from an error body (JSON `error.message`, `error`, `message` or `detail`), if any. */
+function providerMessage(text: string): string | undefined {
+  try {
+    const j = JSON.parse(text) as Record<string, unknown>;
+    const e = j.error;
+    const m =
+      (e && typeof e === "object" ? (e as Record<string, unknown>).message : e) ?? j.message ?? j.detail;
+    if (typeof m === "string" && m.trim()) return m.trim().slice(0, 300);
+  } catch {
+    /* not JSON */
+  }
+  const t = text.trim();
+  return t && t.length <= 300 && !/[<{]/.test(t[0]!) ? t : undefined;
+}
+
+/** A chat answer the provider refused (status >= 400): what happened, what it cost, what to do. */
+function providerErrorNotice(r: ConfidentialSessionResult): HTMLElement {
+  const st = r.http.status;
+  const said = providerMessage(r.responseText ?? "");
+  const cost = r.costMsats ?? 0;
+  const todo =
+    st === 401 || st === 402 || st === 403
+      ? "The provider account behind this node has a problem (for example its balance). Try again later, or use another node."
+      : st === 429
+        ? "The provider is rate-limiting this node. Wait a minute and send again."
+        : st >= 500
+          ? "The provider had a temporary problem. Send the message again."
+          : "The provider could not handle this request. Change the message or the model and try again.";
+  return h(
+    "div",
+    { class: "notice provider-error-notice" },
+    h("p", {}, `The provider refused this message (HTTP ${st}${said ? `: ${said}` : ""}). There is no answer.`),
+    h("p", {}, cost > 0 ? `It cost ${formatSats(cost)} (the signed receipt checks out; usually the session fee).` : "It cost nothing (the signed receipt checks out)."),
+    h("p", {}, todo),
+    h(
+      "details",
+      { class: "error-detail" },
+      h("summary", {}, "details"),
+      h("pre", {}, `HTTP ${st} ${r.http.statusText ?? ""}\n${(r.responseText ?? "").slice(0, 4000)}`),
+    ),
+  );
 }
 
 /** The technical text of an error, kept under "details" next to the plain one. */

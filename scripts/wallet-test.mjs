@@ -293,6 +293,34 @@ check("deposit_outcome warning: shown as a notice", /connection deposit/.test(no
 await page.click("#deposit-warnings button:has-text('Dismiss')");
 check("deposit_outcome warning: dismissed", ((await page.textContent("#deposit-warnings")) ?? "") === "");
 
+// A provider error head (402 from the provider account behind the node):
+// the stream ends without an answer, the receipt verified. The bubble says
+// what happened, what it cost and what to do; the raw body is under details.
+await page.evaluate(() => {
+  const c = window.__rc.client();
+  c.chat.completions.create = async () => {
+    const result = {
+      framing: "2", n: 2, sid: "abcdef0123456789", stream: 3, connection: "reused", model: "deepseek-v4-flash-0731",
+      http: { status: 402, statusText: "Payment Required", headers: {} },
+      responseText: JSON.stringify({ error: { message: "Insufficient USD or Diem balance" } }),
+      receipt: { session_fee_msat: 0 }, receiptJson: "{}", receiptSig: "00", attestation: {},
+      receiptSigOk: true, attestationSigOk: true, usageMatch: true, costWithinOffer: true, costMsats: 0,
+      deposit: { msat: 2000 }, bytes: { sent: 1, recv: 1 }, timings: { spans: [] }, ttftMs: 100, totalMs: 200,
+    };
+    return { verification: Promise.resolve(result), async *[Symbol.asyncIterator]() {} };
+  };
+  document.getElementById("prompt").value = "hello again";
+});
+await page.click("#send");
+await page.waitForFunction(() => /receipt verified/.test(document.querySelector("#messages .msg.assistant:last-child .meta")?.textContent ?? ""), null, { timeout: 10000 }).catch(() => {});
+const bubble = (await page.textContent("#messages .msg.assistant:last-child")) ?? "";
+check("provider 402: the bubble says the provider refused, with its message", /provider refused this message \(HTTP 402: Insufficient USD or Diem balance\)/.test(bubble), bubble);
+check("provider 402: what it cost", /It cost nothing/.test(bubble), bubble);
+check("provider 402: what to do", /provider account behind this node/.test(bubble) && /another node/.test(bubble), bubble);
+check("provider 402: receipt shown as verified, not as an error", /receipt verified/.test(bubble) && !(await page.$eval("#messages .msg.assistant:last-child", (e) => e.classList.contains("error"))), bubble);
+const raw = await page.$eval("#messages .msg.assistant:last-child .error-detail pre", (e) => e.textContent).catch(() => "");
+check("provider 402: raw status and body under details", /HTTP 402 Payment Required/.test(raw ?? "") && /Insufficient USD/.test(raw ?? ""), raw);
+
 await browser.close();
 server.close();
 if (failed) {
