@@ -38,7 +38,7 @@ const head = (path) =>
   `POST /api/v1/${path} HTTP/1.1\r\nHost: api.venice.ai\r\nAuthorization: Bearer {KEY:63}\r\nContent-Type: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\nContent-Length: {LEN}\r\n\r\n`;
 const body = {
   v: 3,
-  twopc: "split-public-1",
+  twopc: "split-public-2",
   http: ["2", "1.1"],
   h2: { probe_path: "/api/v1/models", idle_secs: 300, max_requests: 100, max_lifetime_s: 3600, kinds: ["chat", "images"] },
   connection_deposit_msat: 2000,

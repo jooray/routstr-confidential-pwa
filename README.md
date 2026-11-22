@@ -16,7 +16,7 @@ For more depth, there is a programmer's guide, [How routstr confidential mode wo
 It is built on the library
 [routstr-confidential-web](https://github.com/jooray/routstr-confidential-web).
 The library runs protocol v3 (connections carrying requests, the two-party
-TLS key schedule `split-public-1`, zero-knowledge proofs, signed receipts) in
+TLS key schedule `split-public-2`, zero-knowledge proofs, signed receipts) in
 the page, with the cryptography in wasm in a Web Worker. That README explains
 how a connection and its requests work and the security model. It needs a
 node on protocol v3: a node that still offers v2 is shown as "node outdated"
