@@ -663,7 +663,7 @@ deposit to that. All of these values go into the signed offer, so clients see th
 <pre><code>curl -s 'https://&lt;node&gt;/v1/confidential/offer?v=3' | jq '{v, http, h2, twopc,
   connection_deposit_msat, idle_timeout_s, upstream_host, models: (.price_list|keys)}'</code></pre>
 <p>
-<code>v</code> must be <code>3</code>, <code>twopc</code> <code>"split-public-2"</code>, <code>http</code> what your
+<code>v</code> must be <code>3</code>, <code>twopc</code> <code>"split-public-3"</code>, <code>http</code> what your
 offer file lists, and <code>models</code> not empty.
 </p>
 <p>The reference driver (in <code>crypto/client</code>, after <code>npm install</code> there; it needs <code>cu-prover</code> and <code>cu-2pc</code>):</p>
