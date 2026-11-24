@@ -2123,7 +2123,7 @@ function friendlyError(err: unknown): string {
     return `This node runs an old protocol (routstr-confidential v${err.nodeVersion}); this app speaks v3. The node must be updated before it can serve confidential requests. Nothing was charged.`;
   }
   if (err instanceof UpgradeRequiredError) return "The node speaks a newer protocol than this app. Reload the page to update the app. Nothing was charged.";
-  if (err instanceof TwoPcVersionMismatchError) return "This app and the node run different versions of the secure setup. Reload the page to update, or pick another node. Nothing was charged.";
+  if (err instanceof TwoPcVersionMismatchError) return "This app and the node run different versions of the secure setup. Reload the page to update, or pick another node. The node may keep the connection deposit: the mismatch shows only after the deposit was reserved.";
   if (err instanceof ConnectionDepositError) {
     return err.status === 402
       ? `Not enough balance for the connection deposit of ${formatSats(err.depositMsat)}. Top up the wallet and try again. Nothing was charged.`
@@ -2195,7 +2195,7 @@ function friendlyError(err: unknown): string {
     case "upgrade_required":
       return "The node speaks a newer protocol than this app. Reload the page to update the app. Nothing was charged.";
     case "twopc_version_mismatch":
-      return "This app and the node run different versions of the secure setup. Reload the page to update, or pick another node. Nothing was charged.";
+      return "This app and the node run different versions of the secure setup. Reload the page to update, or pick another node. The node may keep the connection deposit: the mismatch shows only after the deposit was reserved.";
   }
   if (code) return `Something went wrong (${code}). ${moneyNote(err)} Try again; the details below say more.`;
   return raw;
