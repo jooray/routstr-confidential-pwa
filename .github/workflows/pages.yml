@@ -7,8 +7,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -17,6 +15,10 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # configure-pages reads the repository's Pages settings.
+    permissions:
+      contents: read
+      pages: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -46,12 +48,18 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run build
+        env:
+          VITE_TEST_HOOKS: "1"
       - run: node scripts/update-test.mjs
       - run: node scripts/wallet-test.mjs
       - run: node scripts/image-ui-test.mjs
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # Only the job that deploys may write to Pages and mint an OIDC token.
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

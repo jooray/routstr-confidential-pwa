@@ -145,7 +145,7 @@ npm run dev       # Vite dev server (no service worker in dev)
 
 ```bash
 npx playwright install chromium     # once
-npm run build
+VITE_TEST_HOOKS=1 npm run build     # a test build: the page's test helpers (window.__rc) are in no other build
 node scripts/e2e-prod.mjs smoke     # production node, no money: signed offer verified, models and prices,
                                     # service worker and version.json, an invalid key refused at setup
 node scripts/update-test.mjs        # automatic update: build A, open, build B, page reloads into B with the notice

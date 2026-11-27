@@ -40,6 +40,7 @@ import {
 } from "@routstr/confidential-web";
 import { APP_BUILD, APP_VERSION, idle, setupPwa } from "./pwa";
 import { deleteImage, listImages, putImage, reencode, type StoredImage } from "./imagestore";
+import { bolt11AmountMsat } from "./bolt11";
 
 declare const __GIT_SHA__: string;
 declare const __LIB_VERSION__: string;
@@ -794,9 +795,9 @@ function mintFeeLines(): HTMLElement {
       {},
       "Cashu mints may charge an input fee when your token is redeemed (and again when you withdraw): ",
       paid.length
-        ? `${paid.map((m) => `${new URL(m.mint).host} ${m.inputFeePpk} ppk`).join(", ")} — that is about ${Math.ceil((paid[0]!.inputFeePpk ?? 0) / 1000)} sat per proof batch of up to ${Math.floor(1000 / Math.max(1, paid[0]!.inputFeePpk ?? 1))} proofs, rounded up.`
+        ? `${paid.map((m) => `${hostOf(m.mint)} ${m.inputFeePpk} ppk`).join(", ")} — that is about ${Math.ceil((paid[0]!.inputFeePpk ?? 0) / 1000)} sat per proof batch of up to ${Math.floor(1000 / Math.max(1, paid[0]!.inputFeePpk ?? 1))} proofs, rounded up.`
         : "the node's mints charge none.",
-      ` Mints this node accepts: ${(offer?.mints ?? []).map((m) => new URL(m).host).join(", ") || "—"}.`,
+      ` Mints this node accepts: ${offerMints().map(hostOf).join(", ") || "—"}.`,
     ),
   );
 }
@@ -1319,6 +1320,20 @@ async function refreshBalance(): Promise<void> {
   } else renderSide();
 }
 
+/** The signed offer's mints: the node's text, so only strings that are http(s) URLs. */
+function offerMints(): string[] {
+  const list: unknown = offer?.mints;
+  if (!Array.isArray(list)) return [];
+  return list.filter((m): m is string => {
+    if (typeof m !== "string") return false;
+    try {
+      return /^https?:$/.test(new URL(m).protocol);
+    } catch {
+      return false;
+    }
+  });
+}
+
 function hostOf(url: string): string {
   try {
     return new URL(url).host;
@@ -1414,13 +1429,23 @@ function saveInvoices(): void {
 
 function invoiceBoxes(): HTMLElement[] {
   return invoices.map((inv) => {
-    const qr = qrcode(0, "L");
-    qr.addData(inv.bolt11.toUpperCase(), "Alphanumeric");
-    qr.make();
+    // The invoice is the node's text: one a QR code cannot hold must not stop
+    // the panel from rendering (it is still there to copy).
+    let qrSrc: string | undefined;
+    try {
+      const qr = qrcode(0, "L");
+      qr.addData(inv.bolt11.toUpperCase(), "Alphanumeric");
+      qr.make();
+      qrSrc = qr.createDataURL(6, 2);
+    } catch {
+      qrSrc = undefined;
+    }
     return h(
       "div",
       { class: "invoice" },
-      h("div", { class: "qr" }, h("img", { src: qr.createDataURL(6, 2), alt: "Lightning invoice QR code" })),
+      qrSrc
+        ? h("div", { class: "qr" }, h("img", { src: qrSrc, alt: "Lightning invoice QR code" }))
+        : h("p", { class: "warnbox" }, "This invoice cannot be shown as a QR code."),
       h("div", { class: "row" }, h("a", { href: `lightning:${inv.bolt11}` }, "Open in wallet"), h("button", { type: "button", onclick: () => copy(inv.bolt11, "Invoice copied") }, "Copy invoice")),
       h(
         "p",
@@ -1545,6 +1570,16 @@ async function onLightning(): Promise<void> {
   const key = credential?.startsWith("sk-") ? credential : undefined;
   try {
     const inv = await walletOp(() => nodeApi.lightningInvoice(amount, key));
+    // Pay only what was asked for: the invoice is the node's, the amount the user's.
+    const asked = typeof inv.bolt11 === "string" ? bolt11AmountMsat(inv.bolt11) : null;
+    if (asked === null) throw new Error("the node's answer is not a Lightning invoice");
+    if (asked !== BigInt(amount) * 1000n) {
+      throw new Error(
+        asked === undefined
+          ? "the node's invoice names no amount"
+          : `the node's invoice asks for ${Number(asked) / 1000} sat, not the ${amount} sat you entered`,
+      );
+    }
     const pending: PendingInvoice = {
       id: inv.invoice_id,
       node,
@@ -2201,11 +2236,21 @@ function friendlyError(err: unknown): string {
   return raw;
 }
 
-/** Non-secret outcomes for the browser tests (no credential, no prompt). */
+/**
+ * Outcomes for the browser tests: in every build only non-secret results and
+ * errors (no credential, no prompt). The helpers that reach the client (and
+ * with it the credential), the conversation and the event log are in a build
+ * made for the tests only (`VITE_TEST_HOOKS=1 npm run build`), never in the
+ * deployed app.
+ */
 function testHook(): { results: unknown[]; errors: string[]; renderMarkdown?: (t: string) => string } {
   const w = window as unknown as { __rc?: { results: unknown[]; errors: string[]; renderMarkdown?: (t: string) => string } };
-  // Test helpers only: no credential or secret is reachable through them.
-  w.__rc ??= {
+  if (w.__rc) return w.__rc;
+  if (import.meta.env.VITE_TEST_HOOKS !== "1") {
+    w.__rc = { results: [], errors: [] };
+    return w.__rc;
+  }
+  w.__rc = {
     results: [],
     errors: [],
     renderMarkdown,
@@ -2660,7 +2705,7 @@ async function restart(): Promise<void> {
     }, () => undefined);
     renderModels();
     renderImageControls();
-    void mintInputFees(offer.mints ?? []).then((f) => {
+    void mintInputFees(offerMints()).then((f) => {
       mintFees = f;
       renderSide();
     });

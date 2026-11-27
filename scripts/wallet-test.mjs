@@ -14,7 +14,7 @@
 //    a bar (scripted events); its failure is one plain sentence with the raw
 //    text under "details"; every library error code has a plain sentence;
 //  - a deposit outcome the library flags is shown as a notice.
-//   node scripts/wallet-test.mjs      (build first: npm run build)
+//   node scripts/wallet-test.mjs      (build first: VITE_TEST_HOOKS=1 npm run build)
 import { chromium } from "playwright";
 import { PREFIX, serveDist } from "./serve-dist.mjs";
 
@@ -52,6 +52,8 @@ const body = {
   chat: { cap_keys: ["max_tokens"], fixed_pins: [["stream", true], ["stream_options", { include_usage: true }]] },
   price_list: { "deepseek-v4-flash-0731": { in: 160, cached_in: 34, out: 320 } },
   abandon_fee_msat: 2000,
+  // A mint entry that is not a URL must not break the wallet panel.
+  mints: ["https://mint.test", "not a url"],
   capabilities: ["chat", "images"],
   // Malformed: a variant pin key outside the policy.
   images: {
@@ -101,6 +103,10 @@ const paid = {};
 let reservedPolls = 0;
 let refunds = 0;
 let invoiceNo = 0;
+/** While set, the fake node's next invoice asks for this many sats instead of the amount requested. */
+let invoiceSatsOverride;
+/** A BOLT 11-shaped invoice for `sats` (amount in units of 100 msat, "n"); its data part is bech32 letters. */
+const fakeBolt11 = (sats, no) => `lnbc${sats * 10}n1pvjluez${"qpzry9x8gf2tvdw0s3jn54khce6mua7l"[no % 32]}test`;
 for (const node of [NODE_A, NODE_B]) {
   await page.route(`${node}/**`, (route) => {
     const req = route.request();
@@ -119,7 +125,10 @@ for (const node of [NODE_A, NODE_B]) {
     }
     if (p === "/lightning/invoice") {
       invoiceNo++;
-      return json({ invoice_id: `inv${invoiceNo}`, bolt11: `lnbc10n1test${invoiceNo}`, amount_sats: 10, expires_at: Math.floor(Date.now() / 1000) + 600, payment_hash: "00" });
+      const asked = JSON.parse(req.postData() ?? "{}").amount_sats;
+      const sats = invoiceSatsOverride ?? asked;
+      invoiceSatsOverride = undefined;
+      return json({ invoice_id: `inv${invoiceNo}`, bolt11: fakeBolt11(sats, invoiceNo), amount_sats: asked, expires_at: Math.floor(Date.now() / 1000) + 600, payment_hash: "00" });
     }
     const m = p.match(/^\/lightning\/invoice\/([^/]+)\/status$/);
     if (m) {
@@ -188,6 +197,14 @@ await page.waitForFunction(() => document.querySelectorAll("#invoice .invoice").
 await page.waitForTimeout(3500);
 check("a second invoice does not stop the first one's poll", (statusPolls.inv1 ?? 0) >= 1 && (statusPolls.inv2 ?? 0) >= 1, JSON.stringify(statusPolls));
 check("pending invoices kept in sessionStorage", (await page.evaluate(() => JSON.parse(sessionStorage.getItem("rc:invoices") ?? "[]").length)) === 2);
+check("each invoice shown as a QR code", (await page.locator("#invoice .invoice .qr img").count()) === 2);
+// An invoice for another amount than the one entered is refused, not shown to be paid.
+invoiceSatsOverride = 1000;
+await page.click("button:has-text('Lightning')");
+await page.waitForTimeout(1500);
+check("an invoice for another amount is not shown", (await page.locator("#invoice .invoice").count()) === 2);
+check("an invoice for another amount is not kept", (await page.evaluate(() => JSON.parse(sessionStorage.getItem("rc:invoices") ?? "[]").length)) === 2);
+check("the node's mints: the URL's host, the entry that is not a URL left out", /Mints this node accepts: mint\.test\./.test((await page.textContent("#side")) ?? ""));
 
 // Automatic update reload: a key kept only in memory, a withdrawn token and the invoices survive.
 await page.click("summary:has-text('Your key')");

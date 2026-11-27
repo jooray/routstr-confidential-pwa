@@ -3,6 +3,10 @@ const VERSION = __VERSION__;
 const BUILD = __BUILD__;
 const CACHE = `routstr-confidential-${VERSION}-${BUILD}`;
 const ASSETS = __ASSETS__;
+// Cache Storage belongs to the whole origin, which other sites may share:
+// answers come only from this release's own cache, never from `caches.match`
+// over every cache of the origin.
+const fromOwnCache = (req, opts) => caches.open(CACHE).then((c) => c.match(req, opts));
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -50,12 +54,12 @@ self.addEventListener("fetch", (event) => {
           return res;
         })
         .catch(() =>
-          (isShell ? Promise.resolve(undefined) : caches.match(url.pathname.endsWith("/") ? `${url.pathname}index.html` : req, { ignoreSearch: true }))
-            .then((own) => own || caches.match("./"))
+          (isShell ? Promise.resolve(undefined) : fromOwnCache(url.pathname.endsWith("/") ? `${url.pathname}index.html` : req, { ignoreSearch: true }))
+            .then((own) => own || fromOwnCache("./"))
             .then((r) => r || Response.error()),
         ),
     );
     return;
   }
-  event.respondWith(caches.match(req).then((hit) => hit || fetch(req)));
+  event.respondWith(fromOwnCache(req).then((hit) => hit || fetch(req)));
 });

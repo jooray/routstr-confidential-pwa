@@ -9,7 +9,7 @@ import { execSync } from "node:child_process";
 import { chromium } from "playwright";
 import { PREFIX, serveDist } from "./serve-dist.mjs";
 
-const build = (v) => execSync("npx vite build", { env: { ...process.env, APP_VERSION: v }, stdio: "ignore" });
+const build = (v) => execSync("npx vite build", { env: { ...process.env, APP_VERSION: v, VITE_TEST_HOOKS: "1" }, stdio: "ignore" });
 let failed = 0;
 const check = (n, c, x = "") => {
   console.log(`${c ? "ok  " : "FAIL"} ${n} ${c ? "" : x}`);
@@ -55,7 +55,20 @@ const idAfter = await buildId(page);
 const toast2 = await page.textContent(".toast");
 check("a deploy without a version bump reaches the open tab", idBefore !== idAfter && /latest build of v0\.0\.2-test/.test(toast2 ?? ""), JSON.stringify({ idBefore, idAfter, toast2 }));
 
+// Cache Storage is the origin's: an entry another site on it put into a cache
+// of its own is never served by this app's worker.
+const foreign = await page.evaluate(async () => {
+  const url = new URL("assets/not-ours.js", location.href).href;
+  const c = await caches.open("another-site");
+  await c.put(url, new Response("planted", { headers: { "content-type": "text/javascript" } }));
+  const r = await fetch(url);
+  const text = await r.text();
+  await caches.delete("another-site");
+  return { status: r.status, text };
+});
+check("the worker answers only from its own cache", foreign.text !== "planted", JSON.stringify(foreign));
+
 await browser.close();
 server.close();
-execSync("npx vite build", { stdio: "ignore" }); // restore the real build
+execSync("npx vite build", { env: { ...process.env, VITE_TEST_HOOKS: "1" }, stdio: "ignore" }); // restore the real version (a test build, as the other tests need)
 process.exit(failed ? 1 : 0);
